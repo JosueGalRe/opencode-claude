@@ -347,6 +347,12 @@ function convertPart(part: unknown, blocks: AnthropicContentBlock[]): void {
   }
 }
 
+/**
+ * Marker text of the synthetic user message OpenCode emits when it promotes
+ * tool-result media for providers that cannot carry media in tool results.
+ */
+export const SYNTHETIC_TOOL_MEDIA_PROMPT = "Attached media from tool result:";
+
 export function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
