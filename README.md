@@ -78,6 +78,12 @@ Add (or merge) this into `~/.config/opencode/opencode.json`:
 }
 ```
 
+The same package entrypoint serves both plugin APIs: OpenCode V2 reads the
+`Plugin.define` definition, OpenCode V1 (≥ 1.18.29) calls `server()`. On V2
+the `"provider"` config block above is unnecessary — the plugin registers the
+`claude-code` provider, its model catalog, and the sign-in integration
+itself.
+
 ### 3. Authenticate
 
 ```bash

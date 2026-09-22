@@ -24,6 +24,7 @@ import {
   submitClaudeCliLoginCode,
 } from "./cli-login.js";
 import { log } from "./log.js";
+import { claudeCodePluginV2 } from "./v2.js";
 import {
   encodeClaudeModelSelection,
   resolveClaudeModelSelection,
@@ -479,7 +480,11 @@ Or use the “Install Claude Code CLI and sign in” action here instead.`,
   };
 }
 
-export default ClaudeCodePlugin;
+// OpenCode V2 reads `id`/`setup` from the default export and ignores
+// `server`; OpenCode V1 (>= 1.18.29, object-form entrypoints) calls
+// `server()`. Older V1 releases that expect a function export must pin an
+// older version of this package.
+export default { ...claudeCodePluginV2, server: ClaudeCodePlugin };
 
 export { detectClaudeCode } from "./detect.js";
 export { getClaudeModels, CLAUDE_CODE_MODELS } from "./models.js";
