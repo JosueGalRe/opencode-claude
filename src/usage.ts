@@ -30,6 +30,12 @@ export type OpenAIUsage = {
       context_window?: number;
     }
   >;
+  aggregate_usage?: OpenAIUsage;
+};
+
+export type AssistantUsageState = {
+  readonly aggregate: OpenAIUsage | null;
+  readonly latest: OpenAIUsage | null;
 };
 
 function asNumber(value: unknown): number {
@@ -146,6 +152,23 @@ export function usageFromSdkResult(event: unknown): OpenAIUsage | null {
   return null;
 }
 
+/** Extract the per-turn usage snapshot from an Agent SDK `result` event. */
+export function usageFromSdkTurnResult(event: unknown): OpenAIUsage | null {
+  if (!event || typeof event !== "object") return null;
+  const e = event as Record<string, unknown>;
+  if (e.type !== "result") return null;
+  if (!e.usage || typeof e.usage !== "object") return null;
+
+  const usage = fromAnthropicUsage(e.usage as Record<string, unknown>);
+  if (
+    typeof e.total_cost_usd === "number" &&
+    Number.isFinite(e.total_cost_usd)
+  ) {
+    usage.cost_usd = e.total_cost_usd;
+  }
+  return usage;
+}
+
 /**
  * Extract per-API-call usage from an Agent SDK `assistant` event
  * (`message.usage`). Each assistant event carries the usage of exactly one
@@ -197,42 +220,58 @@ export function addOpenAIUsage(
 }
 
 /** Count a replayed SDK assistant message only once across tool continuations. */
-export function addUniqueAssistantUsage(
-  acc: OpenAIUsage | null,
+export function addUniqueAssistantUsageState(
+  state: AssistantUsageState,
   delta: OpenAIUsage,
   messageId: string | null,
   seen: Set<string>,
-): OpenAIUsage | null {
+): AssistantUsageState {
   if (messageId) {
-    if (seen.has(messageId)) return acc;
+    if (seen.has(messageId)) return state;
     seen.add(messageId);
   }
-  return addOpenAIUsage(acc, delta);
+  return {
+    aggregate: addOpenAIUsage(state.aggregate, delta),
+    latest: delta,
+  };
 }
 
 /**
- * Combine the per-response accumulated usage (one entry per Anthropic API
- * call seen during this HTTP response) with the SDK `result` snapshot.
- *
- * The accumulated value is the correct per-response accounting; the result
- * snapshot is cumulative for the whole Claude query (all prior turns of a
- * resumed/continued session included) and would double-count. It is only a
- * fallback for turns where no assistant events were observed, plus a donor
- * for cost/model breakdown metadata.
+ * OpenCode reads `usage` as the CURRENT context size (for compaction
+ * scheduling), so the per-response report must be the latest API call's
+ * totals — not the sum of the turn's calls (each call re-sends the whole
+ * context, so summing inflates it), and not the SDK result's cumulative
+ * snapshot (which includes prior turns of a continued query). The sum is
+ * preserved as `aggregate_usage`; the result snapshot is a fallback for
+ * turns with no assistant events and a donor for cost/model metadata.
  */
-export function resolveTurnUsage(
-  accumulated: OpenAIUsage | null,
+export function resolveOpenCodeUsage(
+  state: AssistantUsageState,
   result: OpenAIUsage | null,
 ): OpenAIUsage | null {
-  if (!accumulated) return result;
-  if (!result) return accumulated;
+  const current = state.latest ?? state.aggregate ?? result;
+  if (!current) return null;
+  const aggregate = state.aggregate;
+  const aggregateDiffers =
+    aggregate !== null &&
+    state.latest !== null &&
+    (aggregate.prompt_tokens !== state.latest.prompt_tokens ||
+      aggregate.completion_tokens !== state.latest.completion_tokens ||
+      aggregate.total_tokens !== state.latest.total_tokens ||
+      aggregate.prompt_tokens_details?.cached_tokens !==
+        state.latest.prompt_tokens_details?.cached_tokens ||
+      aggregate.prompt_tokens_details?.cache_write_tokens !==
+        state.latest.prompt_tokens_details?.cache_write_tokens);
   return {
-    ...accumulated,
-    ...(accumulated.cost_usd === undefined && result.cost_usd !== undefined
+    ...current,
+    ...(current.cost_usd === undefined && result?.cost_usd !== undefined
       ? { cost_usd: result.cost_usd }
       : {}),
-    ...(accumulated.model_usage === undefined && result.model_usage !== undefined
+    ...(current.model_usage === undefined && result?.model_usage !== undefined
       ? { model_usage: result.model_usage }
+      : {}),
+    ...(aggregateDiffers
+      ? { aggregate_usage: aggregate }
       : {}),
   };
 }

@@ -631,8 +631,8 @@ async function main() {
   const {
     usageFromAssistantEvent,
     addOpenAIUsage,
-    addUniqueAssistantUsage,
-    resolveTurnUsage,
+    addUniqueAssistantUsageState,
+    resolveOpenCodeUsage,
   } = await import("../src/usage.ts");
   const callUsage = usageFromAssistantEvent({
     type: "assistant",
@@ -668,39 +668,43 @@ async function main() {
   assert.equal(summed.prompt_tokens_details?.cache_write_tokens, 30);
 
   const seenAssistantUsageIds = new Set<string>();
-  const firstUnique = addUniqueAssistantUsage(
-    null,
+  const firstUnique = addUniqueAssistantUsageState(
+    { aggregate: null, latest: null },
     callUsage!,
     "sdk-message-1",
     seenAssistantUsageIds,
   );
-  const replayed = addUniqueAssistantUsage(
+  const replayed = addUniqueAssistantUsageState(
     firstUnique,
     callUsage!,
     "sdk-message-1",
     seenAssistantUsageIds,
   );
   assert.deepEqual(replayed, firstUnique);
-  const secondUnique = addUniqueAssistantUsage(
+  const secondUnique = addUniqueAssistantUsageState(
     replayed,
     callUsage!,
     "sdk-message-2",
     seenAssistantUsageIds,
   );
-  assert.equal(secondUnique?.total_tokens, callUsage!.total_tokens * 2);
+  assert.equal(secondUnique.aggregate?.total_tokens, callUsage!.total_tokens * 2);
 
-  // Accumulated per-response usage wins over the cumulative result snapshot
-  // (which would double-count prior turns of a continued Claude query), but
-  // inherits cost/model breakdown metadata from it.
-  const resolved = resolveTurnUsage(summed, {
+  // OpenCode reads usage as current context size: the latest API call's
+  // totals win; the per-response sum is preserved as aggregate_usage; the
+  // result snapshot only donates cost/model metadata.
+  const resolved = resolveOpenCodeUsage(secondUnique, {
     prompt_tokens: 999999,
     completion_tokens: 999999,
     total_tokens: 999999,
     cost_usd: 0.42,
   });
-  assert.equal(resolved?.prompt_tokens, 1040);
+  assert.equal(resolved?.prompt_tokens, callUsage!.prompt_tokens);
+  assert.equal(resolved?.aggregate_usage?.prompt_tokens, 2060);
   assert.equal(resolved?.cost_usd, 0.42);
-  assert.equal(resolveTurnUsage(null, null), null);
+  assert.equal(
+    resolveOpenCodeUsage({ aggregate: null, latest: null }, null),
+    null,
+  );
   assert.match(
     formatCompactNote({ trigger: "auto", pre_tokens: 1000, post_tokens: 100 }),
     /1000 → 100/,
