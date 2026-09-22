@@ -3,14 +3,23 @@
  * (OpenChamber harness session-bindings pattern, scoped to this proxy).
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+export type HistoryFingerprint = {
+  /** How many prior messages the host had sent. */
+  count: number;
+  /** sha1 over the prior messages' role+content, in order. */
+  hash: string;
+};
+
 export type ClaudeSessionBinding = {
   conversationKey: string;
-  foreignSessionId: string;
+  foreignSessionId?: string;
   modelId?: string;
   cwd?: string;
+  history?: HistoryFingerprint;
   updatedAt: number;
 };
 
@@ -54,6 +63,7 @@ export function setForeignSessionId(
 ): void {
   const store = readStore();
   store[conversationKey] = {
+    ...store[conversationKey],
     conversationKey,
     foreignSessionId,
     modelId: meta?.modelId,
@@ -67,6 +77,46 @@ export function clearForeignSessionId(conversationKey: string): void {
   const store = readStore();
   if (!(conversationKey in store)) return;
   delete store[conversationKey];
+  writeStore(store);
+}
+
+/**
+ * Fingerprint of the host message array (role + content, in order). Used to
+ * detect host-side history rewrites (context-pruning plugins, transforms):
+ * on a resume candidate, the incoming array's stored-length prefix must hash
+ * to the stored value, otherwise the host rewrote history and the stale
+ * Claude transcript must not be resumed.
+ */
+export function historyFingerprint(
+  messages: Array<{ role?: string; content?: unknown }>,
+): HistoryFingerprint {
+  const hash = createHash("sha1");
+  for (const msg of messages) {
+    hash.update(msg?.role ?? "");
+    hash.update("");
+    hash.update(JSON.stringify(msg?.content ?? null));
+    hash.update("\n");
+  }
+  return { count: messages.length, hash: hash.digest("hex") };
+}
+
+export function getHistoryFingerprint(
+  conversationKey: string,
+): HistoryFingerprint | undefined {
+  return readStore()[conversationKey]?.history;
+}
+
+export function setHistoryFingerprint(
+  conversationKey: string,
+  history: HistoryFingerprint,
+): void {
+  const store = readStore();
+  store[conversationKey] = {
+    ...store[conversationKey],
+    conversationKey,
+    history,
+    updatedAt: Date.now(),
+  };
   writeStore(store);
 }
 

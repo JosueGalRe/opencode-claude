@@ -83,3 +83,9 @@ export function clearAllBridges(): void {
     deleteBridge(id);
   }
 }
+
+export function deleteBridgesByConversation(conversationKey: string): void {
+  for (const bridge of [...bridges.values()]) {
+    if (bridge.conversationKey === conversationKey) deleteBridge(bridge.id);
+  }
+}

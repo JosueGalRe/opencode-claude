@@ -11,6 +11,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
   deleteBridge,
+  deleteBridgesByConversation,
   findBridgeByConversation,
   findBridgeByPendingTool,
   putBridge,
@@ -46,7 +47,10 @@ import {
   conversationKeyFromMessages,
   findClaudeSessionFile,
   getForeignSessionId,
+  getHistoryFingerprint,
+  historyFingerprint,
   setForeignSessionId,
+  setHistoryFingerprint,
 } from "./session-store.js";
 import { log } from "./log.js";
 import {
@@ -106,6 +110,14 @@ const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
 function structuredOutputReapMs(): number {
   const raw = Number(process.env.OPENCODE_CLAUDE_STRUCTURED_OUTPUT_REAP_MS);
   return Number.isFinite(raw) && raw >= 0 ? raw : 60_000;
+}
+
+/** OPENCODE_CLAUDE_HOST_TRANSCRIPT=0 disables host-history divergence detection. */
+function hostTranscriptWatchEnabled(): boolean {
+  const raw = (process.env.OPENCODE_CLAUDE_HOST_TRANSCRIPT ?? "")
+    .trim()
+    .toLowerCase();
+  return !["0", "false", "off", "no"].includes(raw);
 }
 
 function turnStallMs(): number {
@@ -402,12 +414,50 @@ async function handleChatCompletions(
   const messages = Array.isArray(body.messages) ? body.messages : [];
   const metaKind = detectMetaRequestKind(messages);
   const sessionHeader = req.headers.get(SESSION_HEADER);
-  const conversationKey =
-    requestKeyNamespace(metaKind) +
-    (sessionHeader || conversationKeyFromMessages(messages));
+  const baseConversationKey =
+    sessionHeader || conversationKeyFromMessages(messages);
+  const conversationKey = requestKeyNamespace(metaKind) + baseConversationKey;
+  if (metaKind === "summary") {
+    // OpenCode has compacted its history; resuming the old Claude session
+    // would restore the pre-compaction context, so the next normal turn must
+    // rebuild from the (already compacted) host array instead.
+    deleteBridgesByConversation(baseConversationKey);
+    clearForeignSessionId(baseConversationKey);
+  }
   const selection = selectionFromRequest(req, body);
   const model = resolveClaudeModelId(selection.modelId);
   const stream = body.stream !== false;
+
+  // Host-side history rewrites (context-pruning plugins like DCP, message
+  // transforms) are invisible to a resumed Claude session, which replays its
+  // own stale transcript. Detect the rewrite by fingerprinting the prior
+  // messages each turn; on divergence, drop the binding and let the rebuild
+  // path below transfer the host's (rewritten) history instead.
+  const priorMessages = priorMessagesOf(messages);
+  if (metaKind === null) {
+    const fingerprint = historyFingerprint(priorMessages);
+    const stored = getHistoryFingerprint(conversationKey);
+    if (
+      hostTranscriptWatchEnabled() &&
+      stored &&
+      getForeignSessionId(conversationKey) &&
+      (priorMessages.length < stored.count ||
+        historyFingerprint(priorMessages.slice(0, stored.count)).hash !==
+          stored.hash)
+    ) {
+      log.warn(
+        "[opencode-claude] host rewrote conversation history; transferring history instead of resuming",
+        {
+          conversationKey,
+          priorMessages: priorMessages.length,
+          sentMessages: stored.count,
+        },
+      );
+      deleteBridgesByConversation(conversationKey);
+      clearForeignSessionId(conversationKey);
+    }
+    setHistoryFingerprint(conversationKey, fingerprint);
+  }
 
   // Resume a parked bridge if OpenCode returned tool results.
   const toolResults = collectToolResults(messages);
@@ -636,12 +686,12 @@ async function handleChatCompletions(
   // messages into the prompt so Claude sees the whole conversation.
   const transcript = resume
     ? ""
-    : buildConversationTranscript(priorMessagesOf(messages));
+    : buildConversationTranscript(priorMessages);
   if (transcript) {
     log.info("[opencode-claude] injecting transferred conversation history", {
       conversationKey,
       transcriptChars: transcript.length,
-      historyMessages: priorMessagesOf(messages).length,
+      historyMessages: priorMessages.length,
     });
   }
   const contextualPrompt = withConversationContext(prompt, transcript);
