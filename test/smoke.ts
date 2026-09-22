@@ -736,6 +736,35 @@ async function main() {
     ];
     assert.equal(detectMetaRequestKind(summaryMessages), "summary");
 
+    // OpenCode v1.18.25+ update-summary envelope, with intervening prose
+    // between the prior-summary and the template instruction.
+    const updateSummaryPrompt = [
+      "Here is the conversation so far:",
+      "<conversation>",
+      "User: Continue the implementation.",
+      "</conversation>",
+      "Here is the summary of the conversation before the <conversation> above:",
+      "<prior-summary>",
+      "## Objective\n- Continue the implementation",
+      "</prior-summary>",
+      "The <prior-summary> summarizes everything that happened before the <conversation>. Construct a new summary that combines both.",
+      "The <prior-summary> is discarded after this response, so preserve important information.",
+      "When combining:",
+      "- Preserve decisions and current state.",
+      "Output exactly the Markdown structure shown inside <template> and keep the section order unchanged.",
+    ].join("\n");
+    assert.equal(
+      detectMetaRequestKind([{ role: "user", content: updateSummaryPrompt }]),
+      "summary",
+    );
+    // An ordinary mention of the tag is not a summary request.
+    assert.equal(
+      detectMetaRequestKind([
+        { role: "user", content: "Explain what the <prior-summary> tag means in OpenCode." },
+      ]),
+      null,
+    );
+
     const normalMessages = [
       { role: "system", content: "You are a coding assistant." },
       { role: "user", content: "fix a bug" },
@@ -877,7 +906,13 @@ async function main() {
         `http://127.0.0.1:${port}/v1/chat/completions`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            "x-opencode-claude-effort": encodeClaudeModelSelection({
+              modelId: "claude-haiku-4-5",
+              effort: "max",
+            }),
+          },
           body: JSON.stringify({
             model: "claude-haiku-4-5",
             stream: true,
@@ -911,6 +946,9 @@ async function main() {
       assert.equal(titleOptions!.maxTurns, 1);
       assert.equal(titleOptions!.autoCompactEnabled, false);
       assert.deepEqual(titleOptions!.thinking, { type: "disabled" });
+      // effort "max" + thinking disabled is a 400 from the API — meta
+      // requests must not forward the selected effort.
+      assert.equal(titleOptions!.effort, undefined);
       assert.equal(titleOptions!.resume, undefined);
       assert.equal(
         titleOptions!.systemPrompt,
