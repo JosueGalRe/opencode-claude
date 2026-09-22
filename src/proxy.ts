@@ -57,9 +57,11 @@ import {
   buildConversationTranscript,
   extractTextContent,
   latestUserPrompt,
+  openaiToolResultToMcpContent,
   priorMessagesOf,
   promptAsStream,
   withConversationContext,
+  type McpToolResultContent,
   type SdkUserPrompt,
 } from "./prompt.js";
 import {
@@ -333,13 +335,39 @@ async function handleRequest(req: Request): Promise<Response> {
 
 function collectToolResults(
   messages: OpenAIMessage[],
-): Map<string, string> {
-  const results = new Map<string, string>();
+): Map<string, McpToolResultContent[]> {
+  const results = new Map<string, McpToolResultContent[]>();
   for (const msg of messages) {
     if (msg.role !== "tool" || !msg.tool_call_id) continue;
-    results.set(msg.tool_call_id, extractTextContent(msg.content));
+    results.set(msg.tool_call_id, openaiToolResultToMcpContent(msg.content));
   }
   return results;
+}
+
+// OpenCode promotes tool-result media into a synthetic user message
+// ("Attached media from tool result:") for providers that cannot carry media
+// inside tool results — which includes every openai-compatible provider. In
+// the parked-bridge path that message would otherwise be dropped, because the
+// turn resumes by resolving the parked MCP call only. Relay its images with
+// the tool result so Claude actually sees them.
+const SYNTHETIC_TOOL_MEDIA_PROMPT = "Attached media from tool result:";
+
+function collectSyntheticToolMedia(
+  messages: OpenAIMessage[],
+): McpToolResultContent[] {
+  const media: McpToolResultContent[] = [];
+  for (const msg of messages) {
+    if (msg.role !== "user") continue;
+    if (extractTextContent(msg.content).trim() !== SYNTHETIC_TOOL_MEDIA_PROMPT)
+      continue;
+    media.push(
+      ...openaiToolResultToMcpContent(msg.content).filter(
+        (b): b is Extract<McpToolResultContent, { type: "image" }> =>
+          b.type === "image",
+      ),
+    );
+  }
+  return media;
 }
 
 function selectionFromRequest(
@@ -371,6 +399,26 @@ async function handleChatCompletions(
 
   // Resume a parked bridge if OpenCode returned tool results.
   const toolResults = collectToolResults(messages);
+  // Media promoted by OpenCode to a synthetic "Attached media from tool result:"
+  // user message must ride the resolved tool call, or the parked turn resumes
+  // without the image attached.
+  const syntheticMedia = collectSyntheticToolMedia(messages);
+  if (syntheticMedia.length > 0) {
+    if (toolResults.size === 1) {
+      const only = [...toolResults.values()][0];
+      if (!only.some((b) => b.type === "image")) {
+        only.push(...syntheticMedia);
+        log.info("[opencode-claude] attached promoted tool-result media", {
+          count: syntheticMedia.length,
+        });
+      }
+    } else {
+      log.warn("[opencode-claude] promoted tool media could not be mapped", {
+        toolResults: toolResults.size,
+        count: syntheticMedia.length,
+      });
+    }
+  }
   let existing = findBridgeByConversation(conversationKey);
   // Fallback: match by tool_call_id when the session header is missing/changed.
   if ((!existing || existing.pendingTools.size === 0) && toolResults.size > 0) {
@@ -912,16 +960,18 @@ async function buildOpenCodeMcpServer(
               resolve: () => {},
               reject: () => {},
             };
-            const resultPromise = new Promise<string>((resolve, reject) => {
-              pending.resolve = resolve;
-              pending.reject = reject;
-            });
+            const resultPromise = new Promise<McpToolResultContent[]>(
+              (resolve, reject) => {
+                pending.resolve = resolve;
+                pending.reject = reject;
+              },
+            );
             // Register before notifying so the stream consumer sees the tool.
             pendingTools.set(id, pending);
             onPark();
             const result = await resultPromise;
             return {
-              content: [{ type: "text", text: result }],
+              content: result,
             };
           },
           { alwaysLoad: true },

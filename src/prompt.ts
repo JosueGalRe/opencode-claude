@@ -390,6 +390,35 @@ export function openaiContentToAnthropicBlocks(
   return blocks;
 }
 
+export type McpToolResultContent =
+  | { type: "text"; text: string }
+  | { type: "image"; data: string; mimeType: string };
+
+/**
+ * Convert OpenAI-compatible tool result content into MCP result blocks.
+ * OpenCode's read tool returns images as file attachments on the tool result;
+ * those must stay attached when the parked Claude SDK tool call resumes.
+ */
+export function openaiToolResultToMcpContent(
+  content: unknown,
+): McpToolResultContent[] {
+  const result: McpToolResultContent[] = [];
+  for (const block of openaiContentToAnthropicBlocks(content)) {
+    if (block.type === "text") {
+      result.push(block);
+      continue;
+    }
+    if (block.type === "image" && block.source.type === "base64") {
+      result.push({
+        type: "image",
+        data: block.source.data,
+        mimeType: block.source.media_type,
+      });
+    }
+  }
+  return result;
+}
+
 /**
  * Latest user turn as a Claude Agent SDK prompt (string when text-only).
  */
