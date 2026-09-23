@@ -55,3 +55,34 @@ export function failureHintFor(kind: ClaudeFailureKind): string {
       return "";
   }
 }
+
+/**
+ * HTTP 429 for an active subscription limit. `retryAfterSeconds` drives the
+ * host's retry countdown; `resetsAt` (epoch ms) is echoed when known.
+ */
+export function rateLimitResponse(
+  message: string,
+  retryAfterSeconds: number,
+  resetsAt: number | undefined,
+): Response {
+  const resetsAtISO =
+    resetsAt !== undefined ? new Date(resetsAt).toISOString() : undefined;
+  return Response.json(
+    {
+      error: {
+        message,
+        type: failureTypeFor("rate_limit"),
+        code: "claude_session_limit",
+        ...(resetsAtISO ? { resets_at: resetsAtISO } : {}),
+        retry_after: retryAfterSeconds,
+      },
+    },
+    {
+      status: failureStatusFor("rate_limit"),
+      headers: {
+        "Retry-After": String(retryAfterSeconds),
+        ...(resetsAtISO ? { "x-claude-rate-limit-reset": resetsAtISO } : {}),
+      },
+    },
+  );
+}

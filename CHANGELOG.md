@@ -83,6 +83,22 @@
   blocking the event loop.
 - `autoCompactEnabled: false` now reaches the SDK (`settings`); dead
   `getPid`/`interrupt`/tree-kill code replaced by `Query.close()`.
+- **Parked turns expire** — a turn parked on tool calls kept its Claude CLI
+  child alive until another turn of that conversation or proxy shutdown, so
+  abandoned conversations leaked processes. Parks now close after
+  `OPENCODE_CLAUDE_PARKED_TURN_TTL_MS` (default 1 h, `0` disables); late
+  results rebuild the turn with the history transferred.
+
+### Internal
+
+- `bun run test` runs the smoke suite plus every `test/*-regression.ts`
+  (before, only `smoke.ts` ran — locally and in the release workflow); a new
+  CI workflow builds and tests on push to `main` and on pull requests.
+- `handleChatCompletions` split up: the park/resume state machine is
+  `TurnRunner` (`src/turn-runner.ts`), the MCP tool bridge and aliases live
+  in `src/tool-bridge.ts`, the system prompt is composed by
+  `claudeCodePreset` (`system-context.ts`) and the title/summary prompts by
+  `request-kind.ts`. The 429 body is built once (`rateLimitResponse`).
 
 ## 0.13.1 - 2026-08-18
 

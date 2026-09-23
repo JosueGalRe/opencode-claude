@@ -185,6 +185,7 @@ Optional knobs:
 - `OPENCODE_CLAUDE_HISTORY_MAX_CHARS` — budget for transferred conversation history when a Claude session cannot be resumed (default `400000`; newest messages are kept, `0` disables transfer)
 - `OPENCODE_CLAUDE_FORWARD_SYSTEM_CONTEXT` — `0` stops forwarding the OpenCode agent prompt, instructions files, MCP notes and skills list to Claude (default: forwarded, appended to the Claude Code preset)
 - `OPENCODE_CLAUDE_STRUCTURED_OUTPUT_REAP_MS` — grace period before a turn parked only on `StructuredOutput` is closed (default `60000`)
+- `OPENCODE_CLAUDE_PARKED_TURN_TTL_MS` — max time a turn stays parked waiting for OpenCode tool results before its Claude CLI child is closed (default `3600000`, `0` disables). Results that arrive later still work: the turn is rebuilt around them with the conversation history transferred
 - `OPENCODE_CLAUDE_HOST_TRANSCRIPT` — `0` disables host-history divergence detection: by default, when the host rewrote the conversation (context-pruning plugins, compaction, transforms) or another provider answered turns in between, the stale Claude session is dropped and the turn rebuilds from the host's array instead of resuming. System-prompt changes (model, agent, date) do not count as divergence
 
 ## Troubleshooting

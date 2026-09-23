@@ -1,10 +1,11 @@
 /**
- * Regression: a turn parked only on StructuredOutput is never resumed by
- * OpenCode (it treats the call as terminal), so the bridge must be reaped
- * instead of leaking its Claude Code process. Turns parked on regular tools
- * must stay parked.
+ * Regression: parked turns must not leak their Claude Code process.
+ * - A turn parked only on StructuredOutput is never resumed by OpenCode (it
+ *   treats the call as terminal), so it is reaped after a short grace period.
+ * - A turn parked on regular tools stays parked, but only up to the
+ *   parked-turn TTL (OPENCODE_CLAUDE_PARKED_TURN_TTL_MS).
  *
- * Run: bun test/structured-output-reap-regression.ts
+ * Run: bun test/park-reap-regression.ts
  */
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -93,10 +94,14 @@ async function main() {
     const regular = await parkOn("bash", "reap-regular");
     assert.equal(regular.closed(), false, "regular tool park is kept");
     regular.release();
+
+    process.env.OPENCODE_CLAUDE_PARKED_TURN_TTL_MS = "200";
+    const abandoned = await parkOn("bash", "reap-ttl");
+    assert.equal(abandoned.closed(), true, "regular park is reaped past the TTL");
   } finally {
     await stopProxy();
   }
-  console.log("ok — StructuredOutput reap regression passed");
+  console.log("ok — park reap regression passed");
 }
 
 main().catch((err) => {

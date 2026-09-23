@@ -20,9 +20,8 @@ export type ParkedBridge = {
   pendingTools: Map<string, ParkedToolCall>;
   /** SDK assistant messages whose usage was already reported to OpenCode. */
   seenAssistantUsageIds: Set<string>;
-  createdAt: number;
-  /** Continues consuming the SDK stream after tools resolve. */
-  continueStream?: () => AsyncGenerator<unknown, void, unknown>;
+  /** Continues the turn's SDK stream once every parked call is resolved. */
+  resume: () => AsyncGenerator<unknown, void, unknown>;
 };
 
 const bridges = new Map<string, ParkedBridge>();
