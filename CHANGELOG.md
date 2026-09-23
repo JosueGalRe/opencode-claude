@@ -20,6 +20,16 @@
 
 ### Fixes
 
+- **OpenCode V2 third-party rejection (400 "Third-party apps now draw from
+  your extra usage")**: V2's stock system prompt was forwarded into the
+  Claude Code preset append, and its "# Your Model"/`Provider ID`/`<env>`
+  section makes Anthropic classify the request as a third-party app and
+  reject the subscription credential. `openCodeSystemContext` now recognizes
+  the V2 layout and drops the stock base prompt, the Your Model/env/date
+  sections, and the Code Mode tool catalog (which describes an `execute`
+  tool Claude does not have); custom agent prompts, `Instructions from:`
+  blocks and the skills list are still forwarded. Unrecognized V2 layouts
+  forward nothing rather than risk the rejection.
 - **Meta requests keep the Claude Code preset** — title/summary turns used a
   custom `systemPrompt` string that replaced the preset entirely; they now
   append to it so the request fingerprint matches normal Claude Code turns.

@@ -50,6 +50,62 @@ async function main() {
   assert.match(custom, /Run tests sequentially/);
   assert.ok(!custom.includes("Working directory"));
 
+  // V2 stock agent: "# Your Model"/<env>/Code Mode sections are Anthropic's
+  // third-party fingerprint and describe tools Claude does not have — all
+  // dropped; user instructions and the skills list still forwarded.
+  const v2Env = [
+    "# Your Model",
+    "- Name: Sonnet 5",
+    "- Provider ID: claude-code",
+    "Here is some useful information about the environment you are running in:",
+    "<env>",
+    "  Working directory: /repo",
+    "</env>",
+    "Today's date: Tue Sep 22 2026",
+    "# Code Mode",
+    "Use the `execute` tool to call the tools listed below.",
+    "## Available tools",
+    "- browser (45 tools, 9 shown)",
+  ].join("\n");
+  const v2Stock = openCodeSystemContext([
+    {
+      role: "system",
+      content: `You are an AI agent running in OpenCode, a coding agent harness.\n\n# Harness\n- Prefer dedicated tools.\n${v2Env}\n${INSTRUCTIONS}\n\n${SKILLS}`,
+    },
+    { role: "user", content: "hi" },
+  ]);
+  assert.ok(!v2Stock.includes("coding agent harness"), "v2 stock base skipped");
+  assert.ok(!v2Stock.includes("Your Model"), "v2 model section skipped");
+  assert.ok(!v2Stock.includes("Working directory"), "v2 env block skipped");
+  assert.ok(!v2Stock.includes("Code Mode"), "v2 code-mode catalog skipped");
+  assert.ok(!v2Stock.includes("Today's date"), "v2 date line skipped");
+  assert.ok(!v2Stock.includes("# Agent role"));
+  assert.match(v2Stock, /Run tests sequentially/);
+  assert.match(v2Stock, /<name>pdf<\/name>/);
+
+  // V2 custom agent: its prompt replaces the stock opener and is forwarded.
+  const v2Custom = openCodeSystemContext([
+    {
+      role: "system",
+      content: `You are a pirate tester.\n${v2Env}\n${INSTRUCTIONS}`,
+    },
+  ]);
+  assert.match(v2Custom, /# Agent role[\s\S]*pirate tester/);
+  assert.match(v2Custom, /Run tests sequentially/);
+  assert.ok(!v2Custom.includes("Your Model"));
+  assert.ok(!v2Custom.includes("Working directory"));
+
+  // V2 layout without a recognizable env block: forward nothing but a custom
+  // agent prompt rather than risk the third-party credential rejection.
+  const v2Unparsed = openCodeSystemContext([
+    {
+      role: "system",
+      content:
+        "You are an AI agent running in OpenCode, a coding agent harness.\n# Your Model\n- Name: Sonnet 5\n(no env block in this layout)\nsecret boilerplate",
+    },
+  ]);
+  assert.equal(v2Unparsed, "");
+
   assert.equal(openCodeSystemContext([{ role: "user", content: "hi" }]), "");
 
   // Through the proxy: appended to the preset, and switchable off.
