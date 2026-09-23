@@ -24,7 +24,9 @@
   reuse an unrelated window's reset (e.g. weekly) and block every turn for
   days. Only a recent rejection's reset is reused, otherwise the 10-minute
   fallback. A bare `429` no longer counts as a subscription limit.
-  `resets 5pm (TZ)` and midnight resets now parse.
+  `resets 5pm (TZ)`, midnight, and dated long-window resets
+  (`resets Oct 6, 1pm (TZ)`, `resets Jan 2, 2027, 1pm (TZ)`) now parse, so
+  weekly/Opus limits block until their real reset instead of 10 minutes.
 - **Compaction**: a second compaction in the same session sent no
   conversation to summarize. Meta requests no longer bind Claude sessions.
 - **Session store**: the session id was rewritten to disk on every streamed
@@ -39,10 +41,15 @@
 - **Tool media**: images promoted from tool results are attached to the right
   call after the first tool step; PDFs from tools are relayed instead of
   dropped.
-- **Prompts**: the newest user message is always the prompt (no fallback to an
-  older one); an oversized newest history entry is truncated rather than
-  dropping the whole transcript; title/summary detection only reads the
-  newest user message and the system prompt's first line.
+- **Prompts**: the prompt is the whole latest user turn — every message
+  queued after the last assistant reply, in order — instead of only the
+  newest (earlier queued messages never reached a resumed session). No
+  fallback to an older turn; an oversized newest history entry is truncated
+  rather than dropping the whole transcript; title/summary detection only
+  reads the newest user message and the system prompt's first line.
+- **Usage**: `completion_tokens` came from the `message_start` snapshot
+  (a handful of tokens); each API call now takes its final count from
+  `message_delta`.
 - **Lifecycle**: `stopProxy` closes parked Claude CLIs; aborted non-streaming
   requests tear the turn down; a reused pinned-port sibling that exits is
   replaced by a local bind; malformed JSON is 400 and SDK errors keep their
