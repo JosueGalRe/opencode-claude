@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 
 async function main() {
   const tmp = mkdtempSync(join(tmpdir(), "opencode-claude-host-"));
@@ -22,8 +23,13 @@ async function main() {
   writeFileSync(join(claudeConfig, "projects", "proj", "foreign-1.jsonl"), "");
   process.env.CLAUDE_CONFIG_DIR = claudeConfig;
 
-  const { startProxy, stopProxy, setClaudeQueryStarter, getClaudeProxyBaseUrl } =
-    await import("../src/proxy.ts");
+  const {
+    startProxy,
+    stopProxy,
+    setClaudeQueryStarter,
+    getClaudeProxyBaseUrl,
+    getProxyAuthToken,
+  } = await import("../src/proxy.ts");
   const port = await startProxy();
 
   const seen: Array<{ resume?: string; prompt: string }> = [];
@@ -50,9 +56,7 @@ async function main() {
         };
         yield { type: "result", is_error: false, usage: {} };
       })(),
-      interrupt: async () => {},
       close: () => {},
-      getPid: () => null,
     };
   });
 
@@ -61,6 +65,7 @@ async function main() {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
         "x-opencode-claude-session": session,
       },
       body: JSON.stringify({ model: "sonnet", stream: false, messages }),

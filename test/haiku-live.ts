@@ -18,8 +18,13 @@ import {
   startProxy,
   stopProxy,
   getClaudeProxyBaseUrl,
+  getProxyAuthToken,
 } from "../src/proxy.ts";
-import { EFFORT_HEADER, SESSION_HEADER } from "../src/constants.ts";
+import {
+  EFFORT_HEADER,
+  PROXY_TOKEN_HEADER,
+  SESSION_HEADER,
+} from "../src/constants.ts";
 import { detectClaudeCode } from "../src/detect.ts";
 
 type CaseResult = {
@@ -69,6 +74,7 @@ async function chat(
   const stream = opts.stream ?? false;
   const headers: Record<string, string> = {
     "content-type": "application/json",
+    [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
     [EFFORT_HEADER]: effortHeader("high"),
   };
   if (opts.session) headers[SESSION_HEADER] = opts.session;

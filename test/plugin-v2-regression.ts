@@ -19,15 +19,15 @@ async function main() {
     DIRECTORY_HEADER,
     EFFORT_HEADER,
     PROVIDER_ID,
+    PROXY_TOKEN_HEADER,
     SESSION_HEADER,
   } = await import("../src/constants.ts");
   const { decodeClaudeModelSelection } = await import(
     "../src/model-selection.ts"
   );
   const { getClaudeModels } = await import("../src/models.ts");
-  const { getClaudeProxyBaseUrl, getProxyPort } = await import(
-    "../src/proxy.ts"
-  );
+  const { getClaudeProxyBaseUrl, getProxyAuthToken, getProxyPort } =
+    await import("../src/proxy.ts");
   const plugin = (await import("../src/index.ts")).default;
 
   // One entrypoint serves both loaders: V2 reads id/setup, V1 calls server().
@@ -84,7 +84,11 @@ async function main() {
     assert.equal(added!.info.package, "@opencode/ai/providers/openai-compatible");
     assert.equal(added!.info.integrationID, PROVIDER_ID);
     assert.equal(added!.info.settings.baseURL, getClaudeProxyBaseUrl());
-    assert.equal(added!.info.settings.apiKey, "managed-by-claude-code-cli");
+    // The proxy secret rides on both paths: the saved connection-marker
+    // credential may replace the API key, never the dedicated header.
+    const token = getProxyAuthToken();
+    assert.match(token, /^[0-9a-f]{64}$/);
+    assert.equal(added!.info.settings.apiKey, token);
 
     const models = added!.models;
     assert.equal(models.length, getClaudeModels().length);
@@ -121,6 +125,33 @@ async function main() {
     });
     assert.equal(event.headers[SESSION_HEADER], "sess-v2");
     assert.equal(event.headers[DIRECTORY_HEADER], "/work/project");
+    assert.equal(event.headers[PROXY_TOKEN_HEADER], token);
+
+    // The token is what the live proxy demands: a V2 request shaped like the
+    // host's (marker bearer + hook headers) is admitted, one without the
+    // header is refused. The body has no user turn, so an admitted request
+    // stops at validation (400) and never starts the Claude CLI.
+    const url = `${getClaudeProxyBaseUrl()}/chat/completions`;
+    const body = JSON.stringify({ model: "sonnet", messages: [] });
+    const refused = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer managed-by-claude-code-cli",
+      },
+      body,
+    });
+    assert.equal(refused.status, 401);
+    const admitted = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: "Bearer managed-by-claude-code-cli",
+        ...event.headers,
+      },
+      body,
+    });
+    assert.equal(admitted.status, 400, "authorized request reaches validation");
 
     // Other providers are untouched.
     const foreign = {

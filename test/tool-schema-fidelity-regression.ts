@@ -11,13 +11,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 
 async function main() {
   const tmp = mkdtempSync(join(tmpdir(), "opencode-claude-schema-"));
   process.env.XDG_DATA_HOME = tmp;
   process.env.OPENCODE_CLAUDE_RATE_LIMIT_STORE = join(tmp, "rate-limit.json");
 
-  const { startProxy, stopProxy, setClaudeQueryStarter } = await import(
+  const { startProxy, stopProxy, setClaudeQueryStarter, getProxyAuthToken } = await import(
     "../src/proxy.ts"
   );
   const port = await startProxy();
@@ -62,15 +63,14 @@ async function main() {
           yield { type: "system", subtype: "init", session_id: "schema-sess" };
           yield { type: "result", is_error: false, usage: {} };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       };
     });
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
         "x-opencode-claude-session": "schema-fidelity",
       },
       body: JSON.stringify({

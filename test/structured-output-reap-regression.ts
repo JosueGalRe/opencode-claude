@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -19,7 +20,7 @@ async function main() {
   process.env.OPENCODE_CLAUDE_RATE_LIMIT_STORE = join(tmp, "rate-limit.json");
   process.env.OPENCODE_CLAUDE_STRUCTURED_OUTPUT_REAP_MS = "200";
 
-  const { startProxy, stopProxy, setClaudeQueryStarter } = await import(
+  const { startProxy, stopProxy, setClaudeQueryStarter, getProxyAuthToken } = await import(
     "../src/proxy.ts"
   );
   const port = await startProxy();
@@ -46,12 +47,10 @@ async function main() {
             .catch(() => {});
           await released;
         })(),
-        interrupt: async () => {},
         close: () => {
           closed = true;
           release();
         },
-        getPid: () => null,
       };
     });
 
@@ -59,6 +58,7 @@ async function main() {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
         "x-opencode-claude-session": session,
       },
       body: JSON.stringify({

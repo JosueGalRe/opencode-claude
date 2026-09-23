@@ -71,13 +71,18 @@ export function findBridgeByPendingTool(
 export function deleteBridge(id: string): void {
   const bridge = bridges.get(id);
   if (!bridge) return;
+  bridges.delete(id);
   for (const tool of bridge.pendingTools.values()) {
     tool.reject(new Error("Bridge closed"));
   }
-  bridge.handle.close();
-  bridges.delete(id);
+  try {
+    bridge.handle.close();
+  } catch {
+    // ignore — the CLI child may already be gone
+  }
 }
 
+/** Close every parked turn's Claude CLI child (proxy shutdown). */
 export function clearAllBridges(): void {
   for (const id of [...bridges.keys()]) {
     deleteBridge(id);

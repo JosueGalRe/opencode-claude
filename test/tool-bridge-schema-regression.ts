@@ -10,13 +10,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 
 async function main() {
   const tmp = mkdtempSync(join(tmpdir(), "opencode-claude-bridge-"));
   process.env.XDG_DATA_HOME = tmp;
   process.env.OPENCODE_CLAUDE_RATE_LIMIT_STORE = join(tmp, "rate-limit.json");
 
-  const { startProxy, stopProxy, setClaudeQueryStarter } = await import(
+  const { startProxy, stopProxy, setClaudeQueryStarter, getProxyAuthToken } = await import(
     "../src/proxy.ts"
   );
   const port = await startProxy();
@@ -36,9 +37,7 @@ async function main() {
           };
           yield { type: "result", is_error: false, usage: {} };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       };
     });
 
@@ -46,6 +45,7 @@ async function main() {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
         "x-opencode-claude-session": "bridge-schema",
       },
       body: JSON.stringify({

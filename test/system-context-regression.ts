@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 
 const ENV_BLOCK = [
   "You are powered by the model named claude-sonnet. The exact model ID is claude-code/sonnet",
@@ -55,7 +56,7 @@ async function main() {
   const tmp = mkdtempSync(join(tmpdir(), "opencode-claude-sysctx-"));
   process.env.XDG_DATA_HOME = tmp;
   process.env.OPENCODE_CLAUDE_RATE_LIMIT_STORE = join(tmp, "rate-limit.json");
-  const { startProxy, stopProxy, setClaudeQueryStarter } = await import(
+  const { startProxy, stopProxy, setClaudeQueryStarter, getProxyAuthToken } = await import(
     "../src/proxy.ts"
   );
   const port = await startProxy();
@@ -67,9 +68,7 @@ async function main() {
         yield { type: "system", subtype: "init", session_id: "sysctx-sess" };
         yield { type: "result", is_error: false, usage: {} };
       })(),
-      interrupt: async () => {},
       close: () => {},
-      getPid: () => null,
     };
   });
   const send = async (session: string) => {
@@ -77,6 +76,7 @@ async function main() {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
         "x-opencode-claude-session": session,
       },
       body: JSON.stringify({

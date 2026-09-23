@@ -16,6 +16,7 @@ import {
   EFFORT_HEADER,
   OPENAI_COMPATIBLE_NPM,
   PROVIDER_ID,
+  PROXY_TOKEN_HEADER,
 } from "./constants.js";
 import { detectClaudeCode } from "./detect.js";
 import { installClaudeCli } from "./cli-install.js";
@@ -23,6 +24,7 @@ import {
   startClaudeCliLogin,
   submitClaudeCliLoginCode,
 } from "./cli-login.js";
+import { resolveClaudeCli } from "./executable-path.js";
 import { log } from "./log.js";
 import { claudeCodePluginV2 } from "./v2.js";
 import {
@@ -37,6 +39,7 @@ import {
 } from "./models.js";
 import {
   getClaudeProxyBaseUrl,
+  getProxyAuthToken,
   getProxyPort,
   startProxy,
 } from "./proxy.js";
@@ -116,7 +119,9 @@ function buildProviderModel(
     options: {
       includeUsage: true,
     },
-    headers: {},
+    // Requests built from the runtime model carry the proxy secret even when
+    // no chat.headers hook runs for them (e.g. auxiliary title requests).
+    headers: { [PROXY_TOKEN_HEADER]: getProxyAuthToken() },
     release_date: "",
     variants,
   };
@@ -212,11 +217,13 @@ function ensureClaudeProviderConfig(
         : "Claude Code",
     npm: existing.npm ?? OPENAI_COMPATIBLE_NPM,
     options: {
-      apiKey: "claude-code-proxy",
       includeUsage: true,
       ...existingOptions,
       // Live listener URL must win over any stale pinned baseURL in user config.
       ...(baseURL ? { baseURL } : {}),
+      // The proxy only serves callers holding this process's secret; a stale
+      // or placeholder key from user config would be rejected with 401.
+      apiKey: getProxyAuthToken(),
     },
     // Seeded catalog first; user-declared model entries win.
     models: {
@@ -278,6 +285,7 @@ export const ClaudeCodePlugin: Plugin = async (
           : undefined;
       const selected = resolveClaudeModelSelection(hookInput.model.id, variant);
       output.headers[EFFORT_HEADER] = encodeClaudeModelSelection(selected);
+      output.headers[PROXY_TOKEN_HEADER] = getProxyAuthToken();
       // The proxy runs in the long-lived OpenCode server process, whose cwd is
       // commonly the service account home (for example /home/ubuntu), not the
       // project attached to this plugin instance. Carry the authoritative
@@ -382,19 +390,25 @@ export function buildAuthMethods(cliPresent: boolean, directory: string) {
 
 /**
  * CLI presence check for the method list, capped so a slow probe can never
- * block plugin load. Unknown results default to "present": the sign-in relay
- * re-detects and falls back to terminal instructions if the CLI is actually
- * missing.
+ * block plugin load. Only the binary is resolved (async spawns, no SDK import
+ * or auth status probe), so the cap is a real bound on load time. Unknown
+ * results default to "present": the sign-in relay re-detects and falls back
+ * to terminal instructions if the CLI is actually missing.
  */
 async function probeCliPresence(): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const detection = await Promise.race([
-      detectClaudeCode(),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    const binaryPath = await Promise.race([
+      resolveClaudeCli(),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), 3000);
+      }),
     ]);
-    return detection ? detection.status !== "missing-cli" : true;
+    return binaryPath !== null;
   } catch {
     return true;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -449,10 +463,19 @@ function relayOrFallback(
   return manualInstallResponse(launch.message);
 }
 
+/** Sign-in poll: fast at first (the user may already be done), then sparse. */
+const LOGIN_POLL_TIMEOUT_MS = 10 * 60_000;
+const LOGIN_POLL_INITIAL_MS = 1_000;
+const LOGIN_POLL_MAX_MS = 10_000;
+
 /**
  * No page to open: the user installs and signs in from a terminal (or via the
  * install action), and the callback watches `claude auth status` until the
  * grant lands. The message always names both the install and the auth command.
+ *
+ * Neither host API hands the callback an abort signal, so an abandoned dialog
+ * is bounded by the deadline; detection is fully async and the interval backs
+ * off so the wait costs the host's event loop next to nothing.
  */
 export function manualInstallResponse(launchMessage: string) {
   return {
@@ -466,13 +489,19 @@ Install Claude Code, sign in, then click Complete:
 Or use the “Install Claude Code CLI and sign in” action here instead.`,
     method: "auto" as const,
     async callback() {
-      const deadline = Date.now() + 10 * 60_000;
+      const deadline = Date.now() + LOGIN_POLL_TIMEOUT_MS;
+      let intervalMs = LOGIN_POLL_INITIAL_MS;
       while (Date.now() < deadline) {
         const detection = await detectClaudeCode();
         if (detection.loggedIn) {
           return { type: "success" as const } as any;
         }
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(intervalMs, remaining)),
+        );
+        intervalMs = Math.min(intervalMs * 2, LOGIN_POLL_MAX_MS);
       }
       log.warn("[opencode-claude] Claude CLI login timed out");
       return { type: "failed" as const };

@@ -14,6 +14,7 @@ import {
   usageFromSdkResult,
   usageFromSdkTurnResult,
 } from "../src/usage.ts";
+import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 
 const firstContext = {
   prompt_tokens: 899_900,
@@ -117,6 +118,7 @@ assert.equal(usageFromSdkTurnResult(resultEvent)?.total_tokens, 950_000);
 
 const {
   getClaudeProxyBaseUrl,
+  getProxyAuthToken,
   setClaudeQueryStarter,
   startProxy,
   stopProxy,
@@ -157,9 +159,7 @@ setClaudeQueryStarter(async () => ({
   stream: (async function* () {
     for (const event of proxyEvents) yield event;
   })(),
-  interrupt: async () => {},
   close: () => {},
-  getPid: () => null,
 }));
 await startProxy();
 try {
@@ -168,6 +168,7 @@ try {
       method: "POST",
       headers: {
         "content-type": "application/json",
+        [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
         "x-opencode-claude-session": `usage-regression-${suffix}`,
       },
       body: JSON.stringify({
@@ -222,9 +223,7 @@ try {
       };
       yield resultEvent;
     })(),
-    interrupt: async () => {},
     close: () => {},
-    getPid: () => null,
   }));
   const fallbackResponse = await request(true, "result-fallback");
   assert.equal(fallbackResponse.status, 200);

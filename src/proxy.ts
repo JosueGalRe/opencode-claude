@@ -8,8 +8,21 @@
  * invokes one, the stream parks (Cursor bridge-pool pattern) and returns
  * tool_calls; the follow-up request with tool results resumes the turn.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {
+  chmodSync,
+  linkSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import {
+  clearAllBridges,
   deleteBridge,
   deleteBridgesByConversation,
   findBridgeByConversation,
@@ -38,6 +51,7 @@ import {
 import { fitToolDescription } from "./tool-description.js";
 import {
   DIRECTORY_HEADER,
+  PROXY_TOKEN_HEADER,
   SESSION_HEADER,
   type ClaudeEffort,
 } from "./constants.js";
@@ -47,8 +61,9 @@ import {
   conversationKeyFromMessages,
   findClaudeSessionFile,
   getForeignSessionId,
-  getHistoryFingerprint,
+  getSessionBinding,
   historyFingerprint,
+  nonSystemMessages,
   setForeignSessionId,
   setHistoryFingerprint,
 } from "./session-store.js";
@@ -66,11 +81,13 @@ import {
   buildConversationTranscript,
   extractTextContent,
   latestUserPrompt,
+  openaiContentToAnthropicBlocks,
   openaiToolResultToMcpContent,
   priorMessagesOf,
   promptAsStream,
   SYNTHETIC_TOOL_MEDIA_PROMPT,
   withConversationContext,
+  type AnthropicContentBlock,
   type McpToolResultContent,
   type SdkUserPrompt,
 } from "./prompt.js";
@@ -209,6 +226,80 @@ export function getProxyPort(): number | null {
   return proxyPort;
 }
 
+/**
+ * Secret the plugin sends on every chat request (Bearer or PROXY_TOKEN_HEADER)
+ * so no other local process or browser page can drive Claude Code through
+ * this listener. A pinned port may be served by a sibling OpenCode process,
+ * so pinned mode shares one token through a 0600 file in the data dir.
+ */
+let proxyAuthToken: string | null = null;
+
+const PROXY_TOKEN_PATTERN = /^[0-9a-f]{64}$/;
+
+function readSharedProxyToken(path: string): string | null {
+  try {
+    const token = readFileSync(path, "utf8").trim();
+    if (!PROXY_TOKEN_PATTERN.test(token)) return null;
+    if ((statSync(path).mode & 0o077) !== 0) chmodSync(path, 0o600);
+    return token;
+  } catch {
+    return null;
+  }
+}
+
+function sharedProxyToken(): string {
+  const xdg = process.env.XDG_DATA_HOME;
+  const base = xdg ? xdg : join(homedir(), ".local", "share");
+  const path = join(base, "opencode-claude", "proxy-token");
+  const existing = readSharedProxyToken(path);
+  if (existing) return existing;
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const token = randomBytes(32).toString("hex");
+  // Publish atomically: a sibling must never read a half-written token.
+  const tmp = `${path}.${process.pid}.${randomUUID()}`;
+  writeFileSync(tmp, token, { mode: 0o600 });
+  try {
+    linkSync(tmp, path);
+    return token;
+  } catch (err) {
+    if ((err as { code?: unknown }).code !== "EEXIST") throw err;
+    // A sibling published first; theirs wins unless it is unusable.
+    const raced = readSharedProxyToken(path);
+    if (raced) return raced;
+    renameSync(tmp, path);
+    return token;
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+export function getProxyAuthToken(): string {
+  proxyAuthToken ??=
+    REQUESTED_PROXY_PORT > 0
+      ? sharedProxyToken()
+      : randomBytes(32).toString("hex");
+  return proxyAuthToken;
+}
+
+function proxyTokenMatches(candidate: string | undefined): boolean {
+  if (!candidate) return false;
+  // Hash both sides so timingSafeEqual gets equal lengths.
+  const given = createHash("sha256").update(candidate).digest();
+  const expected = createHash("sha256").update(getProxyAuthToken()).digest();
+  return timingSafeEqual(given, expected);
+}
+
+/** Either credential may carry the token; V2 hosts may overwrite the Bearer. */
+function isAuthorizedChatRequest(req: Request): boolean {
+  const bearer = /^Bearer\s+(\S+)\s*$/i.exec(
+    req.headers.get("authorization") ?? "",
+  )?.[1];
+  return (
+    proxyTokenMatches(bearer) ||
+    proxyTokenMatches(req.headers.get(PROXY_TOKEN_HEADER)?.trim())
+  );
+}
+
 function isAddrInUseError(err: unknown): boolean {
   if (!err || typeof err !== "object") return false;
   const code = (err as { code?: unknown }).code;
@@ -246,59 +337,119 @@ async function isProxyHealthyAt(baseUrl: string): Promise<boolean> {
   }
 }
 
+function bindProxy(): number {
+  const bound = Bun.serve({
+    hostname: "127.0.0.1",
+    port: REQUESTED_PROXY_PORT, // 0 → ephemeral
+    idleTimeout: PROXY_IDLE_TIMEOUT_SECONDS,
+    async fetch(req) {
+      return handleRequest(req);
+    },
+  });
+  if (!bound.port) {
+    bound.stop(true);
+    throw new Error("Failed to bind Claude proxy to a port");
+  }
+  stopSiblingWatch();
+  server = bound;
+  proxyPort = bound.port;
+  log.info(`[opencode-claude] proxy listening on ${getClaudeProxyBaseUrl()}`);
+  return proxyPort;
+}
+
+const SIBLING_WATCH_INTERVAL_MS = 5_000;
+let siblingWatch: ReturnType<typeof setInterval> | null = null;
+
+function stopSiblingWatch(): void {
+  if (siblingWatch) clearInterval(siblingWatch);
+  siblingWatch = null;
+}
+
+/**
+ * This process forwards to a sibling's listener on the pinned port. When
+ * that sibling exits, take the port over instead of pointing OpenCode at a
+ * dead listener until restart.
+ */
+function reuseSiblingProxy(message: string): number {
+  proxyPort = REQUESTED_PROXY_PORT;
+  log.info(message);
+  if (siblingWatch) return proxyPort;
+  const pinnedUrl = `http://127.0.0.1:${REQUESTED_PROXY_PORT}/v1`;
+  let checking = false;
+  const timer = setInterval(async () => {
+    if (checking) return;
+    checking = true;
+    try {
+      if (await isProxyHealthyAt(pinnedUrl)) return;
+      // stopProxy (or a local bind) may have run during the health check.
+      if (siblingWatch !== timer || server) return;
+      try {
+        bindProxy();
+        log.info(
+          `[opencode-claude] sibling proxy on port ${REQUESTED_PROXY_PORT} stopped; took over the listener`,
+        );
+      } catch (err) {
+        // Another sibling won the race for the port; keep watching it.
+        if (!isAddrInUseError(err)) {
+          log.warn("[opencode-claude] failed to take over pinned proxy port", {
+            port: REQUESTED_PROXY_PORT,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } finally {
+      checking = false;
+    }
+  }, SIBLING_WATCH_INTERVAL_MS);
+  timer.unref?.();
+  siblingWatch = timer;
+  return proxyPort;
+}
+
 export async function startProxy(): Promise<number> {
   if (server && proxyPort) return proxyPort;
+  // Create/load the shared token before a sibling can serve our requests.
+  getProxyAuthToken();
 
   // Only reuse a sibling listener when the operator pinned a port.
   if (REQUESTED_PROXY_PORT > 0) {
     const pinnedUrl = `http://127.0.0.1:${REQUESTED_PROXY_PORT}/v1`;
     if (await isProxyHealthyAt(pinnedUrl)) {
-      proxyPort = REQUESTED_PROXY_PORT;
-      log.info(`[opencode-claude] reusing healthy proxy on ${pinnedUrl}`);
-      return proxyPort;
+      return reuseSiblingProxy(
+        `[opencode-claude] reusing healthy proxy on ${pinnedUrl}`,
+      );
     }
   }
 
-  const hostname = "127.0.0.1";
-  const bindPort = REQUESTED_PROXY_PORT; // 0 → ephemeral
-
   try {
-    server = Bun.serve({
-      hostname,
-      port: bindPort,
-      idleTimeout: PROXY_IDLE_TIMEOUT_SECONDS,
-      async fetch(req) {
-        return handleRequest(req);
-      },
-    });
-    proxyPort = server.port ?? null;
-    if (!proxyPort) {
-      throw new Error("Failed to bind Claude proxy to a port");
-    }
-    log.info(`[opencode-claude] proxy listening on ${getClaudeProxyBaseUrl()}`);
-    return proxyPort;
+    return bindProxy();
   } catch (err) {
     if (
       REQUESTED_PROXY_PORT > 0 &&
       isAddrInUseError(err) &&
       (await isProxyHealthyAt(`http://127.0.0.1:${REQUESTED_PROXY_PORT}/v1`))
     ) {
-      proxyPort = REQUESTED_PROXY_PORT;
-      log.info(
+      return reuseSiblingProxy(
         `[opencode-claude] port ${REQUESTED_PROXY_PORT} in use; reusing existing proxy`,
       );
-      return proxyPort;
     }
     throw err;
   }
 }
 
 export async function stopProxy(): Promise<void> {
+  stopSiblingWatch();
+  // Parked turns each hold a live claude CLI child; nothing resumes them now.
+  clearAllBridges();
   if (server) {
     server.stop(true);
     server = null;
-    proxyPort = null;
   }
+  proxyPort = null;
+}
+
+function errorResponse(status: number, type: string, message: string): Response {
+  return Response.json({ error: { message, type } }, { status });
 }
 
 async function handleRequest(req: Request): Promise<Response> {
@@ -343,15 +494,66 @@ async function handleRequest(req: Request): Promise<Response> {
   }
 
   if (req.method === "POST" && url.pathname === "/v1/chat/completions") {
+    // Browsers always attach Origin to cross-origin POSTs; OpenCode's
+    // server-side provider fetch never does.
+    const origin = req.headers.get("origin");
+    if (origin !== null) {
+      log.warn("[opencode-claude] rejected browser-origin chat request", { origin });
+      return errorResponse(
+        403,
+        "permission_error",
+        "Browser-origin requests to the Claude proxy are not allowed",
+      );
+    }
+    if (!isAuthorizedChatRequest(req)) {
+      log.warn("[opencode-claude] rejected chat request without a valid proxy token");
+      return errorResponse(
+        401,
+        "authentication_error",
+        "Missing or invalid opencode-claude proxy token",
+      );
+    }
+
+    let body: unknown;
     try {
-      const body = (await req.json()) as ChatCompletionRequest;
-      return await handleChatCompletions(req, body);
+      body = await req.json();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return errorResponse(
+        400,
+        "invalid_request_error",
+        `Request body is not valid JSON: ${detail}`,
+      );
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return errorResponse(
+        400,
+        "invalid_request_error",
+        "Request body must be a JSON object",
+      );
+    }
+
+    try {
+      return await handleChatCompletions(req, body as ChatCompletionRequest);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log.error("[opencode-claude] chat completions error", message);
-      return Response.json(
-        { error: { message, type: "server_error" } },
-        { status: 500 },
+      // Errors such as CLAUDE_SDK_UNAVAILABLE carry their own HTTP status.
+      const carried =
+        err && typeof err === "object"
+          ? (err as { statusCode?: unknown }).statusCode
+          : undefined;
+      const status =
+        typeof carried === "number" &&
+        Number.isInteger(carried) &&
+        carried >= 400 &&
+        carried < 600
+          ? carried
+          : 500;
+      log.error("[opencode-claude] chat completions error", { status, message });
+      return errorResponse(
+        status,
+        status < 500 ? "invalid_request_error" : "server_error",
+        message,
       );
     }
   }
@@ -359,39 +561,156 @@ async function handleRequest(req: Request): Promise<Response> {
   return new Response("Not Found", { status: 404 });
 }
 
-function collectToolResults(
-  messages: OpenAIMessage[],
-): Map<string, McpToolResultContent[]> {
-  const results = new Map<string, McpToolResultContent[]>();
-  for (const msg of messages) {
-    if (msg.role !== "tool" || !msg.tool_call_id) continue;
-    results.set(msg.tool_call_id, openaiToolResultToMcpContent(msg.content));
-  }
-  return results;
+/** OpenCode's promoted tool-result media message; not a user turn. */
+function isPromotedToolMedia(msg: OpenAIMessage): boolean {
+  return (
+    msg.role === "user" &&
+    extractTextContent(msg.content).trim() === SYNTHETIC_TOOL_MEDIA_PROMPT
+  );
 }
 
-// OpenCode promotes tool-result media into a synthetic user message
-// ("Attached media from tool result:") for providers that cannot carry media
-// inside tool results — which includes every openai-compatible provider. In
-// the parked-bridge path that message would otherwise be dropped, because the
-// turn resumes by resolving the parked MCP call only. Relay its images with
-// the tool result so Claude actually sees them.
-function collectSyntheticToolMedia(
+/**
+ * The step OpenCode answers in this request: the last assistant message and
+ * the tool results after it. Tool messages of earlier steps are history.
+ */
+type AnsweredToolStep = {
+  assistantIndex: number;
+  /** MCP result per tool_call_id, in message order. */
+  results: Map<string, McpToolResultContent[]>;
+  /**
+   * OpenCode promotes tool-result media into a synthetic user message
+   * ("Attached media from tool result:") after the step for providers that
+   * cannot carry media inside tool results — every openai-compatible
+   * provider. Only this step's message counts: OpenCode re-sends the ones of
+   * earlier steps on every request.
+   */
+  media: McpToolResultContent[];
+};
+
+function collectAnsweredToolStep(
   messages: OpenAIMessage[],
-): McpToolResultContent[] {
-  const media: McpToolResultContent[] = [];
-  for (const msg of messages) {
-    if (msg.role !== "user") continue;
-    if (extractTextContent(msg.content).trim() !== SYNTHETIC_TOOL_MEDIA_PROMPT)
-      continue;
-    media.push(
-      ...openaiToolResultToMcpContent(msg.content).filter(
-        (b): b is Extract<McpToolResultContent, { type: "image" }> =>
-          b.type === "image",
-      ),
-    );
+): AnsweredToolStep | null {
+  let assistantIndex = messages.length - 1;
+  while (assistantIndex >= 0 && messages[assistantIndex]?.role !== "assistant") {
+    assistantIndex--;
   }
-  return media;
+  if (assistantIndex < 0) return null;
+  const results = new Map<string, McpToolResultContent[]>();
+  const media: McpToolResultContent[] = [];
+  for (const msg of messages.slice(assistantIndex + 1)) {
+    if (msg.role === "tool" && msg.tool_call_id) {
+      results.set(msg.tool_call_id, openaiToolResultToMcpContent(msg.content));
+    } else if (isPromotedToolMedia(msg)) {
+      media.push(
+        ...openaiToolResultToMcpContent(msg.content).filter(
+          (b) => !(b.type === "text" && b.text.trim() === SYNTHETIC_TOOL_MEDIA_PROMPT),
+        ),
+      );
+    }
+  }
+  return results.size > 0 ? { assistantIndex, results, media } : null;
+}
+
+/**
+ * Prompt for tool results no parked turn waits for (proxy restart, cancelled
+ * or reaped bridge, superseded turn). The Claude session that made the calls
+ * cannot take their results any more, so the turn is rebuilt: the history
+ * before the step is transferred as usual, and this prompt carries the step
+ * itself — the calls, their full results with media, and any user messages
+ * sent after them.
+ */
+function answeredToolStepPrompt(
+  messages: OpenAIMessage[],
+  step: AnsweredToolStep,
+): SdkUserPrompt {
+  const assistant = messages[step.assistantIndex];
+  const content: AnthropicContentBlock[] = [
+    {
+      type: "text",
+      text: "<tool_results>\nYour previous step called the tools below, but the session that made those calls ended before OpenCode returned their results. They are relayed here. Do not repeat a call unless its result requires it.",
+    },
+  ];
+  const stepText = extractTextContent(assistant.content).trim();
+  if (stepText) {
+    content.push({ type: "text", text: `Your message in that step:\n${stepText}` });
+  }
+  const calls = new Map(
+    (assistant.tool_calls ?? []).map((call) => [call.id, call.function]),
+  );
+  const userBlocks: AnthropicContentBlock[] = [];
+  for (const msg of messages.slice(step.assistantIndex + 1)) {
+    if (msg.role === "tool" && msg.tool_call_id) {
+      const call = calls.get(msg.tool_call_id);
+      const blocks = openaiContentToAnthropicBlocks(msg.content);
+      content.push(
+        {
+          type: "text",
+          text: `Result of ${call?.name ?? msg.name ?? "tool"} ${call?.arguments ?? ""} (${msg.tool_call_id}):`,
+        },
+        ...(blocks.length > 0 ? blocks : [{ type: "text" as const, text: "(no output)" }]),
+      );
+    } else if (isPromotedToolMedia(msg)) {
+      content.push(
+        { type: "text", text: "Media attached to these tool results:" },
+        ...openaiContentToAnthropicBlocks(msg.content).filter(
+          (b) => !(b.type === "text" && b.text.trim() === SYNTHETIC_TOOL_MEDIA_PROMPT),
+        ),
+      );
+    } else if (msg.role === "user") {
+      userBlocks.push(...openaiContentToAnthropicBlocks(msg.content));
+    }
+  }
+  content.push({
+    type: "text",
+    text:
+      userBlocks.length > 0
+        ? "</tool_results>\n\nThe user sent the following after those calls. Respond to it with the results in mind:"
+        : "</tool_results>\n\nContinue the task from these results.",
+  });
+  content.push(...userBlocks);
+  return {
+    type: "user",
+    message: { role: "user", content },
+    parent_tool_use_id: null,
+  };
+}
+
+/**
+ * `delta`: host messages after the last user message the bound Claude
+ * session was given (it starts with that message). Claude's own output —
+ * assistant messages, tool results, promoted media — and user messages still
+ * waiting for an answer are expected there. A user message followed by an
+ * assistant answer means another provider answered a turn this session never
+ * saw: the user switched the OpenCode session away and back.
+ */
+function answeredElsewhere(delta: OpenAIMessage[]): boolean {
+  let sawAssistant = false;
+  let unansweredUser = false;
+  for (const msg of delta) {
+    if (msg.role === "assistant") {
+      if (unansweredUser) return true;
+      sawAssistant = true;
+    } else if (msg.role === "user" && sawAssistant && !isPromotedToolMedia(msg)) {
+      unansweredUser = true;
+    }
+  }
+  return false;
+}
+
+/** Tear the turn down if the client disconnects before `work` settles. */
+async function closeTurnOnAbort<T>(
+  signal: AbortSignal,
+  bridgeId: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const abort = () => deleteBridge(bridgeId);
+  if (signal.aborted) abort();
+  else signal.addEventListener("abort", abort, { once: true });
+  try {
+    return await work();
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
 }
 
 function selectionFromRequest(
@@ -427,64 +746,51 @@ async function handleChatCompletions(
   const selection = selectionFromRequest(req, body);
   const model = resolveClaudeModelId(selection.modelId);
   const stream = body.stream !== false;
+  const isMetaRequest = metaKind !== null;
 
-  // Host-side history rewrites (context-pruning plugins like DCP, message
-  // transforms) are invisible to a resumed Claude session, which replays its
-  // own stale transcript. Detect the rewrite by fingerprinting the prior
-  // messages each turn; on divergence, drop the binding and let the rebuild
-  // path below transfer the host's (rewritten) history instead.
+  // A resumed Claude session only receives the latest user message; the rest
+  // of the host array must already be in its transcript. Two ways it is not:
+  // - host-side history rewrites (context-pruning plugins like DCP, message
+  //   transforms): the prefix the session saw no longer hashes the same;
+  // - turns answered by another provider (the user switched the OpenCode
+  //   session away and back): user turns answered after that prefix.
+  // Either way drop the binding and let the rebuild path below transfer the
+  // host's history instead.
   const priorMessages = priorMessagesOf(messages);
-  if (metaKind === null) {
-    const fingerprint = historyFingerprint(priorMessages);
-    const stored = getHistoryFingerprint(conversationKey);
-    if (
-      hostTranscriptWatchEnabled() &&
-      stored &&
-      getForeignSessionId(conversationKey) &&
-      (priorMessages.length < stored.count ||
-        historyFingerprint(priorMessages.slice(0, stored.count)).hash !==
-          stored.hash)
-    ) {
-      log.warn(
-        "[opencode-claude] host rewrote conversation history; transferring history instead of resuming",
-        {
-          conversationKey,
-          priorMessages: priorMessages.length,
-          sentMessages: stored.count,
-        },
-      );
-      deleteBridgesByConversation(conversationKey);
-      clearForeignSessionId(conversationKey);
+  if (!isMetaRequest && hostTranscriptWatchEnabled()) {
+    const binding = getSessionBinding(conversationKey);
+    const seen = binding?.history;
+    if (binding?.foreignSessionId && seen) {
+      const history = nonSystemMessages(priorMessages);
+      const divergence =
+        history.length < seen.count ||
+        historyFingerprint(history.slice(0, seen.count)).hash !== seen.hash
+          ? "host rewrote conversation history"
+          : answeredElsewhere(history.slice(seen.count))
+            ? "another provider answered turns of this conversation"
+            : null;
+      if (divergence) {
+        log.warn(
+          `[opencode-claude] ${divergence}; transferring history instead of resuming`,
+          {
+            conversationKey,
+            priorMessages: history.length,
+            sentMessages: seen.count,
+          },
+        );
+        deleteBridgesByConversation(conversationKey);
+        clearForeignSessionId(conversationKey);
+      }
     }
-    setHistoryFingerprint(conversationKey, fingerprint);
   }
 
-  // Resume a parked bridge if OpenCode returned tool results.
-  const toolResults = collectToolResults(messages);
-  // Media promoted by OpenCode to a synthetic "Attached media from tool result:"
-  // user message must ride the resolved tool call, or the parked turn resumes
-  // without the image attached.
-  const syntheticMedia = collectSyntheticToolMedia(messages);
-  if (syntheticMedia.length > 0) {
-    if (toolResults.size === 1) {
-      const only = [...toolResults.values()][0];
-      if (!only.some((b) => b.type === "image")) {
-        only.push(...syntheticMedia);
-        log.info("[opencode-claude] attached promoted tool-result media", {
-          count: syntheticMedia.length,
-        });
-      }
-    } else {
-      log.warn("[opencode-claude] promoted tool media could not be mapped", {
-        toolResults: toolResults.size,
-        count: syntheticMedia.length,
-      });
-    }
-  }
+  // Tool results OpenCode returns in this request. Meta requests carry the
+  // conversation only as material to transform; they never resume a turn.
+  const answeredStep = isMetaRequest ? null : collectAnsweredToolStep(messages);
   let existing = findBridgeByConversation(conversationKey);
   // Fallback: match by tool_call_id when the session header is missing/changed.
-  if ((!existing || existing.pendingTools.size === 0) && toolResults.size > 0) {
-    for (const toolCallId of toolResults.keys()) {
+  if ((!existing || existing.pendingTools.size === 0) && answeredStep) {
+    for (const toolCallId of answeredStep.results.keys()) {
       const byTool = findBridgeByPendingTool(toolCallId);
       if (byTool) {
         existing = byTool;
@@ -493,66 +799,97 @@ async function handleChatCompletions(
     }
   }
   if (existing && existing.pendingTools.size > 0) {
-    let resolved = 0;
-    // Deliver queued user messages with the last tool result resolved now,
-    // so they reach Claude exactly once.
-    const steering = collectSteeringText(messages);
-    const resolvable = [...existing.pendingTools.keys()].filter((id) =>
-      toolResults.has(id),
+    const parkedBridge = existing;
+    const results = answeredStep?.results ?? new Map<string, McpToolResultContent[]>();
+    const resolvable = [...parkedBridge.pendingTools.keys()].filter((id) =>
+      results.has(id),
     );
-    const steeringToolId =
-      steering && resolvable.length > 0
-        ? resolvable[resolvable.length - 1]
-        : undefined;
-    for (const [toolId, tool] of existing.pendingTools) {
-      const result = toolResults.get(toolId);
-      if (result !== undefined) {
-        tool.resolve(
-          toolId === steeringToolId ? withSteering(result, steering) : result,
-        );
-        existing.pendingTools.delete(toolId);
-        resolved++;
-      }
-    }
-    if (steeringToolId) {
-      log.info("[opencode-claude] forwarding mid-turn user steering", {
-        conversationKey: existing.conversationKey,
-        steeringChars: steering.length,
+    const lastResolved = resolvable.at(-1);
+    // Promoted media rides the last result resolved now: every result of the
+    // step reaches Claude in the same tool-result message, and OpenCode does
+    // not say which call produced which attachment.
+    const media = answeredStep?.media ?? [];
+    if (
+      lastResolved &&
+      media.length > 0 &&
+      !resolvable.some((id) => results.get(id)!.some((b) => b.type !== "text"))
+    ) {
+      results.set(lastResolved, [...results.get(lastResolved)!, ...media]);
+      log.info("[opencode-claude] attached promoted tool-result media", {
+        toolCallId: lastResolved,
+        count: media.length,
       });
     }
-    if (existing.pendingTools.size === 0 && existing.continueStream) {
+    // Deliver queued user messages with the last tool result resolved now,
+    // so they reach Claude exactly once.
+    const steering = lastResolved ? collectSteeringText(messages) : "";
+    for (const toolId of resolvable) {
+      const result = results.get(toolId)!;
+      parkedBridge.pendingTools
+        .get(toolId)!
+        .resolve(
+          toolId === lastResolved && steering ? withSteering(result, steering) : result,
+        );
+      parkedBridge.pendingTools.delete(toolId);
+    }
+    if (steering) {
+      log.info("[opencode-claude] forwarding mid-turn user steering", {
+        conversationKey: parkedBridge.conversationKey,
+        steeringChars: steering.length,
+      });
+      // The session has now seen the steering message: later turns must
+      // not read it as a turn answered elsewhere.
+      setHistoryFingerprint(
+        parkedBridge.conversationKey,
+        historyFingerprint(priorMessages),
+      );
+    }
+    if (parkedBridge.pendingTools.size === 0 && parkedBridge.continueStream) {
       log.info("[opencode-claude] resuming parked bridge", {
-        conversationKey: existing.conversationKey,
-        resolved,
+        conversationKey: parkedBridge.conversationKey,
+        resolved: resolvable.length,
       });
       return stream
         ? streamOpenAIResponse(
-            existing.continueStream(),
+            parkedBridge.continueStream(),
             body.model || model,
-            existing,
+            parkedBridge,
           )
-        : collectTurnResponse(
-            existing.continueStream(),
-            body.model || model,
-            existing,
+        : closeTurnOnAbort(req.signal, parkedBridge.id, () =>
+            collectTurnResponse(
+              parkedBridge.continueStream!(),
+              body.model || model,
+              parkedBridge,
+            ),
           );
     }
     // Still parked — do not start a parallel Claude turn (OpenCode may retry
     // or send a follow-up before tool results arrive). Re-emit pending calls.
-    // Also covers partial tool results (resolved > 0 but others still pending).
-    if (existing.pendingTools.size > 0) {
+    // Also covers partial tool results (some resolved, others still pending).
+    if (parkedBridge.pendingTools.size > 0) {
       log.info("[opencode-claude] re-emitting parked tool_calls", {
-        conversationKey: existing.conversationKey,
-        pending: existing.pendingTools.size,
-        resolved,
+        conversationKey: parkedBridge.conversationKey,
+        pending: parkedBridge.pendingTools.size,
+        resolved: resolvable.length,
       });
       const parkedEvents = (async function* () {
-        yield { type: "__park__", tools: [...existing!.pendingTools.values()] };
+        yield { type: "__park__", tools: [...parkedBridge.pendingTools.values()] };
       })();
       return stream
-        ? streamOpenAIResponse(parkedEvents, body.model || model, existing)
-        : collectTurnResponse(parkedEvents, body.model || model, existing);
+        ? streamOpenAIResponse(parkedEvents, body.model || model, parkedBridge)
+        : closeTurnOnAbort(req.signal, parkedBridge.id, () =>
+            collectTurnResponse(parkedEvents, body.model || model, parkedBridge),
+          );
     }
+  }
+  if (answeredStep) {
+    log.warn(
+      "[opencode-claude] tool results arrived with no parked turn; rebuilding the turn with them",
+      {
+        conversationKey,
+        toolResults: answeredStep.results.size,
+      },
+    );
   }
 
   log.info("[opencode-claude] chat completions", {
@@ -561,14 +898,13 @@ async function handleChatCompletions(
     metaKind,
     toolCount: Array.isArray(body.tools) ? body.tools.length : 0,
     messageCount: messages.length,
-    hasToolResults: toolResults.size > 0,
+    answeredToolResults: answeredStep?.results.size ?? 0,
     bridgePending: existing?.pendingTools.size ?? 0,
   });
 
   const env = buildClaudeCodeChildEnv();
 
   const openCodeTools = Array.isArray(body.tools) ? body.tools : [];
-  const isMetaRequest = metaKind !== null;
   const requestDirectory = req.headers.get(DIRECTORY_HEADER)?.trim();
   const cwd =
     process.env.OPENCODE_CLAUDE_CWD || requestDirectory || process.cwd();
@@ -603,7 +939,9 @@ async function handleChatCompletions(
     for (const resolve of waiters) resolve();
   };
 
-  const prompt = latestUserPrompt(messages);
+  const prompt = answeredStep
+    ? answeredToolStepPrompt(messages, answeredStep)
+    : latestUserPrompt(messages);
   if (typeof prompt !== "string") {
     const parts = Array.isArray(prompt.message.content)
       ? prompt.message.content.map((b) => b.type)
@@ -667,7 +1005,11 @@ async function handleChatCompletions(
     );
   }
 
-  let resume = getForeignSessionId(conversationKey);
+  // Meta requests are single-shot transformations of the host array, and a
+  // turn rebuilt around orphaned tool results cannot continue the session
+  // that made the calls.
+  let resume =
+    isMetaRequest || answeredStep ? undefined : getForeignSessionId(conversationKey);
   if (resume && !findClaudeSessionFile(resume)) {
     // The claude CLI resumes by looking the session up on disk. A missing
     // transcript (cleanup, different machine, pruned projects dir) would
@@ -682,32 +1024,45 @@ async function handleChatCompletions(
   }
 
   // No resumable Claude session (first claude-code turn of this chat, model
-  // switch mid-conversation, lost store): serialize the prior OpenCode
-  // messages into the prompt so Claude sees the whole conversation.
+  // switch mid-conversation, lost store, meta request, orphaned tool
+  // results): serialize the prior OpenCode messages into the prompt so Claude
+  // sees the whole conversation. Orphaned tool results carry their own step
+  // in the prompt, so the history stops before it.
+  const transferredHistory = answeredStep
+    ? messages.slice(0, answeredStep.assistantIndex)
+    : priorMessages;
   const transcript = resume
     ? ""
-    : buildConversationTranscript(priorMessages);
+    : buildConversationTranscript(transferredHistory);
   if (transcript) {
     log.info("[opencode-claude] injecting transferred conversation history", {
       conversationKey,
       transcriptChars: transcript.length,
-      historyMessages: priorMessages.length,
+      historyMessages: transferredHistory.length,
     });
   }
   const contextualPrompt = withConversationContext(prompt, transcript);
 
-  const mcpServers =
-    !isMetaRequest && openCodeTools.length > 0
-      ? await buildOpenCodeMcpServer(openCodeTools, pendingTools, notifyPark)
-      : undefined;
-
-  // Only bridge to mcp__opencode__* when the MCP server actually built.
-  // buildOpenCodeMcpServer swallows its own errors (logs a warning, returns
-  // undefined) — without this guard the session still disables native tools
-  // and demands mcp__opencode__* even when none were ever registered,
-  // leaving the agent with no filesystem access at all.
-  const bridgeOpenCodeTools =
-    !isMetaRequest && openCodeTools.length > 0 && Boolean(mcpServers);
+  // OpenCode's tools run only through the mcp__opencode__* bridge so every
+  // call passes OpenCode's own permission rules. If the bridge cannot be
+  // built, refuse the turn: falling back to Claude Code's native Bash/Edit
+  // would bypass the permissions the user configured in OpenCode.
+  const bridgeOpenCodeTools = !isMetaRequest && openCodeTools.length > 0;
+  const mcpServers = bridgeOpenCodeTools
+    ? await buildOpenCodeMcpServer(openCodeTools, pendingTools, notifyPark)
+    : undefined;
+  if (bridgeOpenCodeTools && !mcpServers) {
+    log.error("[opencode-claude] OpenCode tool bridge unavailable; refusing turn", {
+      conversationKey,
+      toolCount: openCodeTools.length,
+    });
+    throw Object.assign(
+      new Error(
+        "Could not expose OpenCode's tools to Claude Code (MCP bridge failed to build); the turn was not started. See the opencode-claude log for the cause.",
+      ),
+      { code: "OPENCODE_TOOL_BRIDGE_UNAVAILABLE", statusCode: 503 },
+    );
+  }
   const openCodeToolNames = openCodeTools
     .map((t) => t.function?.name)
     .filter((n): n is string => typeof n === "string" && n.length > 0);
@@ -767,36 +1122,28 @@ async function handleChatCompletions(
     prompt: queryPrompt,
     cwd,
     model,
-    resume: isMetaRequest ? undefined : resume,
+    resume,
     // Meta requests force thinking off; effort "max" is rejected by the API
     // when thinking is disabled, so effort must not be forwarded there.
     effort: isMetaRequest ? undefined : selection.effort,
     env,
-    mcpServers: isMetaRequest ? undefined : mcpServers,
+    mcpServers,
     autoCompactEnabled: !isMetaRequest,
     maxTurns: isMetaRequest ? 1 : undefined,
     thinking: isMetaRequest ? { type: "disabled" } : undefined,
     settingSources: isMetaRequest ? [] : undefined,
     skills: isMetaRequest ? [] : undefined,
-    tools: isMetaRequest || bridgeOpenCodeTools ? [] : undefined,
+    // Claude Code's built-in tools are never enabled: bridged turns use the
+    // mcp__opencode__* tools, and meta or tool-less agent turns are text-only.
+    tools: [],
     toolAliases,
     allowedTools: bridgeOpenCodeTools
       ? openCodeToolNames.map((n) => `mcp__opencode__${n}`)
       : undefined,
-    permissionMode: isMetaRequest
-      ? "dontAsk"
-      : bridgeOpenCodeTools
-      ? "bypassPermissions"
-      : "acceptEdits",
+    // Bridged calls are gated by OpenCode's permission prompts, so Claude-side
+    // checks are skipped; anything else is denied without prompting.
+    permissionMode: bridgeOpenCodeTools ? "bypassPermissions" : "dontAsk",
     allowDangerouslySkipPermissions: bridgeOpenCodeTools,
-    ...(bridgeOpenCodeTools
-      ? {}
-      : {
-          canUseTool: async (
-            _toolName: string,
-            input: Record<string, unknown>,
-          ) => ({ behavior: "allow" as const, updatedInput: input }),
-        }),
     systemPrompt: utilitySystemPrompt || {
       type: "preset",
       preset: "claude_code",
@@ -851,6 +1198,13 @@ async function handleChatCompletions(
     }, structuredOutputReapMs());
     reaper.unref?.();
   }
+
+  // Bind the conversation to the Claude session this turn runs in, together
+  // with the host history that session has now seen. SDK events all carry
+  // the session id, so it is written once per change, not once per event.
+  // Meta requests never resume, so they bind nothing.
+  const seenHistory = isMetaRequest ? null : historyFingerprint(priorMessages);
+  let persistedSessionId: string | null = null;
 
   async function* consumeStream(): AsyncGenerator<unknown, void, unknown> {
     const iterator = handle!.stream[Symbol.asyncIterator]();
@@ -947,10 +1301,12 @@ async function handleChatCompletions(
         const event = raced.value.value;
         trackMessageState(event);
         const sessionId = extractSessionId(event);
-        if (sessionId) {
+        if (seenHistory && sessionId && sessionId !== persistedSessionId) {
+          persistedSessionId = sessionId;
           setForeignSessionId(conversationKey, sessionId, {
             modelId: model,
             cwd,
+            history: seenHistory,
           });
         }
         yield event;
@@ -975,13 +1331,21 @@ async function handleChatCompletions(
   // fake-200 turns in a loop and each retry re-sends the whole conversation
   // to Anthropic: that doom loop burned ~4% of a weekly quota on 2026-08-11.
   if (stream) {
-    const probe = await probeTurnEvents(consumeStream());
+    const probe = await closeTurnOnAbort(req.signal, bridgeId, () =>
+      probeTurnEvents(consumeStream()),
+    );
     if (probe.status === "failed") {
       return failureResponse(probe.errorText, conversationKey);
     }
-    return streamOpenAIResponse(probe.replay, body.model || model, bridge);
+    return streamOpenAIResponse(probe.replay, body.model || model, bridge, {
+      suppressReasoning: isMetaRequest,
+    });
   }
-  return collectTurnResponse(consumeStream(), body.model || model, bridge);
+  return closeTurnOnAbort(req.signal, bridgeId, () =>
+    collectTurnResponse(consumeStream(), body.model || model, bridge, {
+      suppressReasoning: isMetaRequest,
+    }),
+  );
 }
 
 

@@ -4,6 +4,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Keep session bindings out of the user's real ~/.local/share store.
+process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "opencode-claude-smoke-"));
 
 async function main() {
   const { buildClaudeCodeChildEnv } = await import("../src/auth-env.ts");
@@ -24,7 +30,7 @@ async function main() {
   const { conversationKeyFromMessages } = await import(
     "../src/session-store.ts"
   );
-  const { isClaudeEffort, PROVIDER_ID, EFFORT_LEVELS } = await import(
+  const { isClaudeEffort, PROVIDER_ID, EFFORT_LEVELS, PROXY_TOKEN_HEADER } = await import(
     "../src/constants.ts"
   );
   const {
@@ -38,6 +44,7 @@ async function main() {
     stopProxy,
     getProxyPort,
     getClaudeProxyBaseUrl,
+    getProxyAuthToken,
     PROXY_IDLE_TIMEOUT_SECONDS,
   } = await import("../src/proxy.ts");
 
@@ -233,10 +240,13 @@ async function main() {
     );
     chmodSync(fake, 0o755);
 
-    assert.equal(resolveClaudeCli({ PATH: "/usr/bin:/bin", HOME: home }), fake);
+    assert.equal(
+      await resolveClaudeCli({ PATH: "/usr/bin:/bin", HOME: home }),
+      fake,
+    );
     // And PATH itself still wins when the CLI is on it.
     assert.equal(
-      resolveClaudeCli({ PATH: "/usr/bin:/bin", HOME: home }).length > 0,
+      (await resolveClaudeCli({ PATH: "/usr/bin:/bin", HOME: home }))!.length > 0,
       true,
     );
   }
@@ -780,9 +790,7 @@ async function main() {
   {
     const { spawnSync } = await import("node:child_process");
     const { readFileSync, unlinkSync, existsSync } = await import("node:fs");
-    const { join } = await import("node:path");
-    const { homedir } = await import("node:os");
-    const logPath = join(homedir(), ".local", "share", "opencode-claude", "debug.log");
+    const logPath = join(process.env.XDG_DATA_HOME!, "opencode-claude", "debug.log");
     if (existsSync(logPath)) unlinkSync(logPath);
 
     const off = spawnSync(
@@ -900,9 +908,7 @@ async function main() {
           };
           yield { type: "result", is_error: false, usage: {} };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       };
     });
     try {
@@ -912,6 +918,7 @@ async function main() {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
             "x-opencode-claude-effort": encodeClaudeModelSelection({
               modelId: "claude-haiku-4-5",
               effort: "max",
@@ -1150,9 +1157,7 @@ async function main() {
           stream: (async function* () {
             for (const ev of events) yield ev;
           })(),
-          interrupt: async () => {},
           close: () => {},
-          getPid: () => null,
         };
       });
 
@@ -1160,6 +1165,7 @@ async function main() {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
           "x-opencode-claude-session": "smoke-mock-ok",
           "x-opencode-claude-directory": "/data/projects/infra",
         },
@@ -1225,9 +1231,7 @@ async function main() {
               `Claude Code returned an error result: ${limitText}`,
             );
           })(),
-          interrupt: async () => {},
           close: () => {},
-          getPid: () => null,
         };
       });
 
@@ -1237,6 +1241,7 @@ async function main() {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
             "x-opencode-claude-session": "smoke-mock-err",
           },
           body: JSON.stringify({
@@ -1263,6 +1268,7 @@ async function main() {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
             "x-opencode-claude-session": "smoke-mock-err2",
           },
           body: JSON.stringify({
@@ -1292,6 +1298,7 @@ async function main() {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
             "x-opencode-claude-session": "smoke-mock-blocked",
           },
           body: JSON.stringify({
@@ -1315,7 +1322,10 @@ async function main() {
         `http://127.0.0.1:${port}/v1/chat/completions`,
         {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
+          },
           body: JSON.stringify({
             model: "claude-haiku-4-5",
             stream: false,
@@ -1370,9 +1380,7 @@ async function main() {
             },
           };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       }));
 
       const midRunRes = await fetch(
@@ -1381,6 +1389,7 @@ async function main() {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
             "x-opencode-claude-session": "smoke-mock-mid-run-limit",
           },
           body: JSON.stringify({
@@ -1419,6 +1428,7 @@ async function main() {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
             "x-opencode-claude-session": "smoke-mock-mid-run-limit",
           },
           body: JSON.stringify({
@@ -1506,9 +1516,7 @@ async function main() {
             };
             yield { type: "result", is_error: false, usage: {} };
           })(),
-          interrupt: async () => {},
           close: () => {},
-          getPid: () => null,
         };
       });
     };
@@ -1518,6 +1526,7 @@ async function main() {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
           "x-opencode-claude-session": sessionHeader,
         },
         body: JSON.stringify({ model: "sonnet", stream: false, messages }),
@@ -1624,6 +1633,7 @@ async function main() {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
           "x-opencode-claude-session": sessionHeader,
         },
         body: JSON.stringify({
@@ -1640,9 +1650,7 @@ async function main() {
           yield { type: "result", is_error: true, result: text };
           throw new Error(`Claude Code returned an error result: ${text}`);
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       }));
     };
 
@@ -1709,9 +1717,7 @@ async function main() {
             result: "Claude Code process exploded unexpectedly",
           };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       }));
       const lateRes = await postTurn("ff-late-content", true);
       assert.equal(lateRes.status, 200);
@@ -1730,9 +1736,7 @@ async function main() {
           yield { type: "system", subtype: "init", session_id: "ff-empty" };
           yield { type: "result", is_error: false, usage: {} };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       }));
       const emptyRes = await postTurn("ff-empty-ok", true);
       assert.equal(emptyRes.status, 200);
@@ -1752,9 +1756,7 @@ async function main() {
           };
           yield { type: "result", is_error: false, usage: {} };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       }));
       const slowStarted = Date.now();
       const slowRes = await postTurn("ff-slow-first-byte", true);
@@ -1810,6 +1812,7 @@ async function main() {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
           "x-opencode-claude-session": "smoke-parallel-tools",
         },
         body: JSON.stringify({
@@ -1899,9 +1902,7 @@ async function main() {
           };
           yield { type: "result", is_error: false, result: "" };
         })(),
-        interrupt: async () => {},
         close: () => {},
-        getPid: () => null,
       };
     });
     try {
@@ -1962,6 +1963,7 @@ async function main() {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
           "x-opencode-claude-session": sessionHeader,
         },
         body: JSON.stringify({
@@ -1982,11 +1984,9 @@ async function main() {
           yield { type: "system", subtype: "init", session_id: "stall-sess" };
           await new Promise(() => {}); // never produces another event
         })(),
-        interrupt: async () => {},
         close: () => {
           stalledCloseCalled = true;
         },
-        getPid: () => null,
       }));
       const stallStarted = Date.now();
       const stallRes = await postStream("smoke-stall");
@@ -2021,11 +2021,9 @@ async function main() {
           };
           await new Promise(() => {}); // turn continues forever
         })(),
-        interrupt: async () => {},
         close: () => {
           cancelCloseCalled = true;
         },
-        getPid: () => null,
       }));
       const abort = new AbortController();
       const cancelRes = await fetch(
@@ -2034,6 +2032,7 @@ async function main() {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
             "x-opencode-claude-session": "smoke-cancel",
           },
           body: JSON.stringify({
@@ -2068,8 +2067,8 @@ async function main() {
       }
     }
 
-    // CLI resolution is memoized per PATH+HOME: re-probing spawns sync
-    // child processes that hard-block the host's event loop on every query.
+    // CLI resolution is memoized per PATH+HOME: re-probing would spawn
+    // several child processes on every query.
     const binDir = mkdtempSync(joinPath(tmpdir(), "oc-claude-bin-"));
     try {
       const fakeCli = joinPath(binDir, "claude");
@@ -2079,14 +2078,14 @@ async function main() {
       // (~/.local/bin/claude on this dev box) cannot mask a negative result.
       const env = { PATH: binDir, HOME: binDir };
       resetClaudeCliResolutionCache();
-      const first = resolveClaudeCli(env);
+      const first = await resolveClaudeCli(env);
       assert.ok(first && first.endsWith("claude"), "fake CLI resolved");
       unlinkSync(fakeCli);
-      const second = resolveClaudeCli(env);
+      const second = await resolveClaudeCli(env);
       assert.equal(second, first, "resolution must be memoized");
       resetClaudeCliResolutionCache();
       assert.equal(
-        resolveClaudeCli(env),
+        await resolveClaudeCli(env),
         null,
         "cache reset must re-probe (and negatives stay uncached)",
       );

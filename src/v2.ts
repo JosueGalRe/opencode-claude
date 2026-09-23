@@ -16,16 +16,23 @@ import {
   EFFORT_HEADER,
   EFFORT_LEVELS,
   PROVIDER_ID,
+  PROXY_TOKEN_HEADER,
   SESSION_HEADER,
 } from "./constants.js";
 import { detectClaudeCode } from "./detect.js";
+import { resolveClaudeCli } from "./executable-path.js";
 import { log } from "./log.js";
 import {
   encodeClaudeModelSelection,
   resolveClaudeModelSelection,
 } from "./model-selection.js";
 import { getClaudeModels } from "./models.js";
-import { getClaudeProxyBaseUrl, startProxy, stopProxy } from "./proxy.js";
+import {
+  getClaudeProxyBaseUrl,
+  getProxyAuthToken,
+  startProxy,
+  stopProxy,
+} from "./proxy.js";
 
 const AUTH_METHOD_ID = "claude-cli";
 const PROVIDER_PACKAGE = "@opencode/ai/providers/openai-compatible";
@@ -51,9 +58,9 @@ async function requireLoginSuccess(result: { type: string }) {
 
 async function authorizeWithClaudeCli() {
   const { buildAuthMethods } = await import("./index.js");
-  const detection = await detectClaudeCode();
+  // Presence only: the chosen method's authorize runs the full detection.
   const authorization = await buildAuthMethods(
-    detection.status !== "missing-cli",
+    (await resolveClaudeCli()) !== null,
     process.cwd(),
   )[0]!.authorize();
   if (authorization.method === "code") {
@@ -116,8 +123,11 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
           activation: "enabled",
           package: PROVIDER_PACKAGE,
           integrationID: Integration.ID.make(PROVIDER_ID),
+          // The proxy secret travels both as the API key and as a header
+          // (model.request below): the saved connection-marker credential can
+          // take over the Authorization header, the dedicated header cannot.
           settings: {
-            apiKey: CONNECTION_MARKER,
+            apiKey: getProxyAuthToken(),
             baseURL: getClaudeProxyBaseUrl(),
           },
         },
@@ -154,6 +164,7 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
       event.headers[EFFORT_HEADER] = encodeClaudeModelSelection(
         resolveClaudeModelSelection(event.model.id, event.model.variant),
       );
+      event.headers[PROXY_TOKEN_HEADER] = getProxyAuthToken();
       event.headers[SESSION_HEADER] = event.sessionID;
       event.headers[DIRECTORY_HEADER] = ctx.location.directory;
     });
