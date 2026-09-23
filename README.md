@@ -26,7 +26,7 @@ Sibling plugins: [@openchamber/opencode-cursor](https://github.com/openchamber/o
 
 ### Use your local Claude Code login
 
-The OpenCode/OpenChamber sign-in action launches `claude auth login --claudeai` and relays it: the CLI's own sign-in page opens from the host, and the code Claude shows is pasted back into the host, not a separate terminal. The official CLI performs the OAuth exchange and stores its own credentials. The plugin stores no credentials or connection markers in OpenCode; every inference request, including title and summary generation, runs through the Agent SDK.
+The OpenCode/OpenChamber sign-in action launches `claude auth login --claudeai` and relays it: the CLI's own sign-in page opens from the host, and the code Claude shows is pasted back into the host, not a separate terminal. The official CLI performs the OAuth exchange and stores its own credentials. The plugin stores no credentials in OpenCode (on OpenCode V2 the host saves a secret-free connection marker so the provider shows as connected); every inference request, including title and summary generation, runs through the Agent SDK.
 
 ### Pick models and thinking effort
 
@@ -34,11 +34,11 @@ Aliases `fable` / `opus` / `sonnet` / `haiku` plus pinned ids. Native OpenCode v
 
 ### Keep agent loops moving
 
-OpenCode tools bridge as in-process MCP. Calls park and resume instead of deadlocking or inventing output. Streaming, MCP, and sticky Claude session IDs keep follow-ups on the same Agent SDK turn. Read-only tools (`read`, `glob`, `grep`, `task`, …) are annotated `readOnlyHint`, and all tool calls of one message reach OpenCode in a single `tool_calls` response, so two subagents from one turn run at the same time.
+OpenCode tools bridge as in-process MCP. Calls park and resume instead of deadlocking or inventing output. Streaming, MCP, and sticky Claude session IDs keep follow-ups on the same Agent SDK turn. Read-only tools (`read`, `glob`, `grep`, `task`, …) are annotated `readOnlyHint`, and all tool calls of one message reach OpenCode in a single `tool_calls` response, so two subagents from one turn run at the same time. Claude Code's own built-in tools are never enabled: every tool call goes through OpenCode and its permission rules, a turn with no OpenCode tools runs tool-less, and a tool bridge that cannot be built fails the turn (HTTP 503) instead of falling back.
 
 ### Attachments, compact, and history
 
-Images and PDFs from OpenCode reach Claude (data URLs and remote URLs). Long sessions auto-compact like Claude Code. When a Claude session cannot be resumed, the prior conversation is serialized into the prompt so Claude does not start blind.
+Images and PDFs from OpenCode reach Claude (data URLs and remote URLs), including media returned by tools. Long sessions auto-compact like Claude Code. When a Claude session cannot be resumed — or the host history diverged from what that session saw (history rewritten, or turns answered by another provider) — the prior conversation is serialized into the prompt so Claude does not start blind.
 
 ### Rate-limit counter
 
@@ -117,7 +117,7 @@ opencode plugin file://$PWD
 | **Install Claude Code CLI and sign in** | Shown only when the CLI is missing: runs the official installer (`npm i -g @anthropic-ai/claude-code`, official install script as fallback), then continues with the sign-in relay |
 | Paste the code from the Claude page | Goes straight to the CLI's stdin; the CLI does the token exchange and owns the result |
 | `claude auth login --claudeai` | Terminal alternative, always called out in the instructions — also the offered fallback when the CLI is missing (with the install command alongside) |
-| Successful verification | Completes without writing to OpenCode's auth store |
+| Successful verification | Completes without writing credentials to OpenCode's auth store (V2 stores only a secret-free connection marker) |
 | Access expires | Claude Code refreshes its own credentials |
 
 Signing in is either the link and its code or the terminal command — the sign-in page the CLI asks for is the only URL the plugin ever hands to the host.
@@ -141,6 +141,8 @@ OpenCode
 | **CLI** | Subscription credentials and the Claude Code harness |
 
 Model catalog: aliases `fable` / `opus` / `sonnet` / `haiku` plus pinned ids. Effort selection is encoded in `x-opencode-claude-effort` so the proxy passes the exact `effort` (and adaptive thinking) into the Agent SDK.
+
+The proxy listens on `127.0.0.1` only and requires a per-process secret on `POST /v1/chat/completions` (`Authorization: Bearer <token>` or `x-opencode-claude-token`); the plugin injects it into every request. Requests carrying an `Origin` header are rejected, so web pages cannot drive it. `GET /health`, `/v1/models`, and `/v1/rate-limit` stay open (read-only).
 
 ### Rate-limit counter
 
@@ -170,14 +172,14 @@ Debug logging: `OPENCODE_CLAUDE_DEBUG=1`.
 
 Optional knobs:
 
-- `OPENCODE_CLAUDE_PROXY_PORT` — optional pinned proxy port (default: ephemeral / OS-assigned; live URL is published to OpenCode via plugin config)
+- `OPENCODE_CLAUDE_PROXY_PORT` — optional pinned proxy port (default: ephemeral / OS-assigned; live URL is published to OpenCode via plugin config). Processes sharing a pinned port share the proxy secret through `~/.local/share/opencode-claude/proxy-token` (mode 0600); a process reusing a sibling's proxy re-binds the port if that sibling exits
 - `OPENCODE_CLAUDE_CWD` — working directory passed to the Agent SDK
 - `OPENCODE_CLAUDE_RATE_LIMIT_FAST_FAIL` — `0` disables the 429 rate-limit gate
 - `OPENCODE_CLAUDE_RATE_LIMIT_STORE` — override the rate-limit store path (tests)
 - `OPENCODE_CLAUDE_HISTORY_MAX_CHARS` — budget for transferred conversation history when a Claude session cannot be resumed (default `400000`; newest messages are kept, `0` disables transfer)
 - `OPENCODE_CLAUDE_FORWARD_SYSTEM_CONTEXT` — `0` stops forwarding the OpenCode agent prompt, instructions files, MCP notes and skills list to Claude (default: forwarded, appended to the Claude Code preset)
 - `OPENCODE_CLAUDE_STRUCTURED_OUTPUT_REAP_MS` — grace period before a turn parked only on `StructuredOutput` is closed (default `60000`)
-- `OPENCODE_CLAUDE_HOST_TRANSCRIPT` — `0` disables host-history divergence detection: by default, when the host rewrote the conversation (context-pruning plugins, compaction, transforms), the stale Claude session is dropped and the turn rebuilds from the host's array instead of resuming
+- `OPENCODE_CLAUDE_HOST_TRANSCRIPT` — `0` disables host-history divergence detection: by default, when the host rewrote the conversation (context-pruning plugins, compaction, transforms) or another provider answered turns in between, the stale Claude session is dropped and the turn rebuilds from the host's array instead of resuming. System-prompt changes (model, agent, date) do not count as divergence
 
 ## Troubleshooting
 
@@ -188,6 +190,7 @@ Optional knobs:
 | Authentication error | Run `claude auth login`, verify `claude auth status --json`, then restart OpenCode |
 | 429 / rate-limit | Poll `GET /v1/rate-limit` or wait until `resetsAt`; the next turn resumes the same session |
 | Tools hang or invent output | Update to the latest plugin — park/resume MCP bridging is required |
+| 401 from the proxy | The request lacks the proxy secret — use the plugin's provider entry (it injects the header) and restart OpenCode after upgrading |
 | Attachments ignored | Use a current build; image/PDF parts are converted to Claude blocks |
 
 ## Release

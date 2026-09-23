@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **Proxy requires a secret** — `POST /v1/chat/completions` now needs a
+  per-process token (`Authorization: Bearer` or `x-opencode-claude-token`),
+  injected by the plugin in both OpenCode V1 and V2; any local process or web
+  page could previously drive Claude on the user's subscription. Requests with
+  an `Origin` header get 403. A pinned port shares the token through a 0600
+  file.
+- **No auto-approved native tools** — a turn with no OpenCode tools ran
+  Claude Code's built-in Bash/Edit/Write with every call allowed, bypassing
+  OpenCode permissions. Native tools are now always disabled; tool-less turns
+  run tool-less, and a tool bridge that fails to build returns 503.
+- **Installer no longer pipes `curl` into `bash`** — the fallback install
+  script is downloaded to a temp file, checked, then run; download failures
+  and npm's error are reported instead of a false success.
+
+### Fixes
+
+- **Rate-limit gate**: a transient 429 or unparseable limit message could
+  reuse an unrelated window's reset (e.g. weekly) and block every turn for
+  days. Only a recent rejection's reset is reused, otherwise the 10-minute
+  fallback. A bare `429` no longer counts as a subscription limit.
+  `resets 5pm (TZ)` and midnight resets now parse.
+- **Compaction**: a second compaction in the same session sent no
+  conversation to summarize. Meta requests no longer bind Claude sessions.
+- **Session store**: the session id was rewritten to disk on every streamed
+  token; now once per change. Writes are atomic, a corrupt file is moved
+  aside instead of wiping every binding, and entries older than 30 days are
+  evicted.
+- **Resume correctness**: system-prompt changes (model, agent, date) no
+  longer drop the Claude session; turns answered by another provider now force
+  a history rebuild instead of resuming a stale session; tool results that
+  arrive after their parked turn is gone reach Claude instead of the task
+  being re-run blind.
+- **Tool media**: images promoted from tool results are attached to the right
+  call after the first tool step; PDFs from tools are relayed instead of
+  dropped.
+- **Prompts**: the newest user message is always the prompt (no fallback to an
+  older one); an oversized newest history entry is truncated rather than
+  dropping the whole transcript; title/summary detection only reads the
+  newest user message and the system prompt's first line.
+- **Lifecycle**: `stopProxy` closes parked Claude CLIs; aborted non-streaming
+  requests tear the turn down; a reused pinned-port sibling that exits is
+  replaced by a local bind; malformed JSON is 400 and SDK errors keep their
+  status code.
+- **Sign-in**: a superseded `claude auth login` child can no longer tear down
+  the current one; CLI detection and the auth poll use async probes instead of
+  blocking the event loop.
+- `autoCompactEnabled: false` now reaches the SDK (`settings`); dead
+  `getPid`/`interrupt`/tree-kill code replaced by `Query.close()`.
+
 ## 0.13.1 - 2026-08-18
 
 - **Fix: turn stall watchdog** — a Claude turn that went totally silent (dead
