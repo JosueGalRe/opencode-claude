@@ -109,6 +109,12 @@ bun install && bun run build
 opencode plugin file://$PWD
 ```
 
+On OpenCode V2, list the checkout directory under `plugins` instead; the V2 host loads `<dir>/server.js`:
+
+```jsonc
+{ "plugins": ["file:///path/to/opencode-claude"] }
+```
+
 ## Authenticate
 
 | Step | What happens |
