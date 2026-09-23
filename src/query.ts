@@ -1,8 +1,7 @@
 /**
- * Thin wrapper around @anthropic-ai/claude-agent-sdk query()/interrupt.
+ * Thin wrapper around @anthropic-ai/claude-agent-sdk query()/close().
  * Import failure is surfaced as unavailable — detect must not report ready.
  */
-import { spawnSync } from "node:child_process";
 import { buildClaudeCodeChildEnv } from "./auth-env.js";
 import { isClaudeEffort, type ClaudeEffort } from "./constants.js";
 import {
@@ -84,46 +83,10 @@ export async function probeClaudeAgentSdk(): Promise<{
   }
 }
 
-export function killProcessTree(
-  pid: number | null | undefined,
-  options: { signal?: NodeJS.Signals; force?: boolean } = {},
-): void {
-  if (!Number.isInteger(pid) || !pid || pid <= 0) return;
-  const signal = options.signal || "SIGTERM";
-  if (process.platform === "win32") {
-    try {
-      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore",
-        timeout: 5000,
-        windowsHide: true,
-      });
-    } catch {
-      // best-effort
-    }
-    return;
-  }
-
-  const kill = (target: number, killSignal: NodeJS.Signals) => {
-    try {
-      process.kill(target, killSignal);
-    } catch {
-      // ignore
-    }
-  };
-
-  kill(-pid, signal);
-  kill(pid, signal);
-  if (options.force) {
-    kill(-pid, "SIGKILL");
-    kill(pid, "SIGKILL");
-  }
-}
-
 export type ClaudeQueryHandle = {
   stream: AsyncIterable<unknown>;
-  interrupt: () => Promise<void>;
+  /** End the query and its CLI subprocess (SDK `Query.close()`); idempotent. */
   close: () => void;
-  getPid: () => number | null | undefined;
 };
 
 export type StartClaudeQueryParams = {
@@ -157,7 +120,11 @@ export type StartClaudeQueryParams = {
   pathToClaudeCodeExecutable?: string;
   /** Required when permissionMode is bypassPermissions. */
   allowDangerouslySkipPermissions?: boolean;
-  /** Auto-compact long conversations (Claude Code default). */
+  /**
+   * `false` turns Claude Code auto-compact off for this query (passed as the
+   * `autoCompactEnabled` flag setting); otherwise the user's Claude Code
+   * setting applies (default on).
+   */
   autoCompactEnabled?: boolean;
   /** Stop utility queries such as title generation after one model turn. */
   maxTurns?: number;
@@ -192,7 +159,7 @@ export async function startClaudeQuery(
   const cwd = assertClaudeWorkingDirectory(params.cwd);
   const pathToClaudeCodeExecutable =
     trimmedString(params.pathToClaudeCodeExecutable) ||
-    resolveClaudeCodeExecutable({ env }) ||
+    (await resolveClaudeCodeExecutable({ env })) ||
     undefined;
 
   const options: Record<string, unknown> = {
@@ -235,8 +202,8 @@ export async function startClaudeQuery(
     options.thinking = { type: "adaptive" };
   }
 
-  if (params.autoCompactEnabled !== false) {
-    options.autoCompactEnabled = true;
+  if (params.autoCompactEnabled === false) {
+    options.settings = { autoCompactEnabled: false };
   }
 
   if (Number.isInteger(params.maxTurns) && Number(params.maxTurns) > 0) {
@@ -330,34 +297,15 @@ export async function startClaudeQuery(
   }
 
   let closed = false;
-  const getPid = () =>
-    result && typeof result === "object" && "pid" in result
-      ? (result.pid as number | null | undefined)
-      : null;
-
-  const interrupt = async () => {
-    if (result && typeof result.interrupt === "function") {
-      try {
-        await result.interrupt();
-      } catch {
-        // fall through to tree-kill
-      }
-    }
-    killProcessTree(getPid(), { signal: "SIGTERM" });
-  };
-
   const close = () => {
     if (closed) return;
     closed = true;
-    killProcessTree(getPid(), { signal: "SIGTERM", force: true });
-    if (result && typeof result.return === "function") {
-      try {
-        Promise.resolve(result.return()).catch(() => {});
-      } catch {
-        // ignore
-      }
+    try {
+      result?.close?.();
+    } catch {
+      // already torn down
     }
   };
 
-  return { stream: result as AsyncIterable<unknown>, interrupt, close, getPid };
+  return { stream: result as AsyncIterable<unknown>, close };
 }

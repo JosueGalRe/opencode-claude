@@ -1,9 +1,8 @@
 /**
  * Claude CLI detection + Agent SDK probe (from OpenChamber harness).
  */
-import { spawnSync } from "node:child_process";
 import { buildClaudeCodeChildEnv } from "./auth-env.js";
-import { resolveClaudeCli } from "./executable-path.js";
+import { resolveClaudeCli, runCliProbe } from "./executable-path.js";
 import { probeClaudeAgentSdk } from "./query.js";
 
 export type ClaudeDetectStatus =
@@ -58,46 +57,39 @@ export function interpretClaudeAuthStatus(payload: unknown): {
   };
 }
 
-export function probeClaudeAuthStatusCli(options: {
+export async function probeClaudeAuthStatusCli(options: {
   binaryPath: string;
   env?: NodeJS.ProcessEnv | Record<string, string | undefined>;
-  spawnSyncFn?: typeof spawnSync;
-}): { loggedIn: boolean; detail: string; authMethod?: string } | null {
+}): Promise<{ loggedIn: boolean; detail: string; authMethod?: string } | null> {
   const binaryPath = options.binaryPath.trim();
   if (!binaryPath) return null;
-  const spawnSyncFn = options.spawnSyncFn || spawnSync;
 
+  const result = await runCliProbe(binaryPath, ["auth", "status", "--json"], {
+    env: buildClaudeCodeChildEnv(options.env || process.env),
+    timeoutMs: 6000,
+  });
+  if (result.failed && !result.stdout.trim()) return null;
+
+  const output = result.stdout.trim();
+  if (!output) return { loggedIn: false, detail: "auth-status-empty" };
+
+  let payload: unknown;
   try {
-    const result = spawnSyncFn(binaryPath, ["auth", "status", "--json"], {
-      encoding: "utf8",
-      timeout: 6000,
-      env: buildClaudeCodeChildEnv(options.env || process.env) as NodeJS.ProcessEnv,
-      windowsHide: true,
-    });
-
-    const output = `${result.stdout || ""}`.trim();
-    if (!output) return { loggedIn: false, detail: "auth-status-empty" };
-
-    let payload: unknown;
-    try {
-      payload = JSON.parse(output);
-    } catch {
-      const start = output.indexOf("{");
-      const end = output.lastIndexOf("}");
-      if (start < 0 || end <= start) {
-        return { loggedIn: false, detail: "auth-status-parse-error" };
-      }
-      try {
-        payload = JSON.parse(output.slice(start, end + 1));
-      } catch {
-        return { loggedIn: false, detail: "auth-status-parse-error" };
-      }
-    }
-
-    return interpretClaudeAuthStatus(payload);
+    payload = JSON.parse(output);
   } catch {
-    return null;
+    const start = output.indexOf("{");
+    const end = output.lastIndexOf("}");
+    if (start < 0 || end <= start) {
+      return { loggedIn: false, detail: "auth-status-parse-error" };
+    }
+    try {
+      payload = JSON.parse(output.slice(start, end + 1));
+    } catch {
+      return { loggedIn: false, detail: "auth-status-parse-error" };
+    }
   }
+
+  return interpretClaudeAuthStatus(payload);
 }
 
 export async function detectClaudeCode(options?: {
@@ -109,7 +101,7 @@ export async function detectClaudeCode(options?: {
   const binaryPath =
     options?.binaryPath !== undefined
       ? options.binaryPath
-      : resolveClaudeCli(env);
+      : await resolveClaudeCli(env);
 
   if (!binaryPath) {
     return {
@@ -123,20 +115,13 @@ export async function detectClaudeCode(options?: {
     };
   }
 
-  let version: string | null = null;
-  try {
-    const result = spawnSync(binaryPath, ["--version"], {
-      encoding: "utf8",
-      timeout: 4000,
-      env: buildClaudeCodeChildEnv(env) as NodeJS.ProcessEnv,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    const match = `${result.stdout || ""}`.trim().match(/(\d+\.\d+\.\d+)/);
-    version = match?.[1] ?? (`${result.stdout || ""}`.trim() || null);
-  } catch {
-    version = null;
-  }
+  const versionRun = await runCliProbe(binaryPath, ["--version"], {
+    env: buildClaudeCodeChildEnv(env),
+    timeoutMs: 4000,
+  });
+  const versionOutput = versionRun.stdout.trim();
+  const version =
+    versionOutput.match(/(\d+\.\d+\.\d+)/)?.[1] ?? (versionOutput || null);
 
   const sdk = await probeClaudeAgentSdk();
   if (!sdk.available) {
@@ -150,7 +135,7 @@ export async function detectClaudeCode(options?: {
     };
   }
 
-  const authStatus = probeClaudeAuthStatusCli({ binaryPath, env });
+  const authStatus = await probeClaudeAuthStatusCli({ binaryPath, env });
   const loggedIn = Boolean(authStatus?.loggedIn);
 
   if (!loggedIn) {

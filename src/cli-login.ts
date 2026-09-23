@@ -139,7 +139,7 @@ export async function startClaudeCliLogin(options?: {
     const env = buildClaudeCodeChildEnv(options?.env ?? process.env);
     const binaryPath =
       options?.binaryPath === undefined
-        ? resolveClaudeCli(env)
+        ? await resolveClaudeCli(env)
         : options.binaryPath;
     if (!binaryPath) {
       status = {
@@ -149,83 +149,11 @@ export async function startClaudeCliLogin(options?: {
       };
       return status;
     }
-
-    stdout = "";
-    stderr = "";
-    authorizeUrl = null;
-
-    try {
-      const spawnLogin = options?.spawnLogin ?? spawn;
-      const spawned = spawnLogin(binaryPath, ["auth", "login", "--claudeai"], {
-        cwd: options?.cwd ?? process.cwd(),
-        env: env as NodeJS.ProcessEnv,
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true,
-      });
-      child = spawned;
-      armIdleTimer();
-
-      spawned.stdout?.setEncoding?.("utf8");
-      spawned.stderr?.setEncoding?.("utf8");
-      spawned.stdout?.on("data", (chunk: string | Buffer) => {
-        stdout = appendOutput(stdout, String(chunk));
-        const url = extractAuthorizeUrl(stdout);
-        if (url && url !== authorizeUrl) {
-          authorizeUrl = url;
-          // A submit in flight owns the terminal status until it settles.
-          if (status.state !== "verifying") {
-            status = { state: "awaiting-code", url };
-          }
-          resolveUrlWaiters(url);
-        }
-      });
-      spawned.stderr?.on("data", (chunk: string | Buffer) => {
-        stderr = appendOutput(stderr, String(chunk));
-        // A malformed code leaves the CLI running and prompting again, so this
-        // notice — not an exit — is how that failure is announced.
-        if (INVALID_CODE_PATTERN.test(stderr)) {
-          resolveVerificationWaiters({
-            ok: false,
-            message:
-              firstMeaningfulLine(stderr) ||
-              "Claude Code rejected the sign-in code.",
-          });
-        }
-      });
-      // A broken pipe (CLI gone while we write the code) must not take the
-      // host process down.
-      spawned.stdin?.on("error", () => {});
-      spawned.once("error", (error) => {
-        status = { state: "failed", message: error.message };
-        teardown();
-        resolveUrlWaiters(null);
-        resolveVerificationWaiters({ ok: false, message: error.message });
-      });
-      spawned.once("exit", (code, signal) => {
-        teardown();
-        if (code !== 0 && status.state !== "succeeded") {
-          status = {
-            state: "failed",
-            message: describeExit(code, signal),
-          };
-        }
-        resolveUrlWaiters(null);
-        resolveVerificationWaiters(
-          code === 0
-            ? { ok: true, message: "" }
-            : {
-                ok: false,
-                message: firstMeaningfulLine(stderr) || describeExit(code, signal),
-              },
-        );
-      });
-    } catch (error) {
-      teardown();
-      status = {
-        state: "failed",
-        message: error instanceof Error ? error.message : String(error),
-      };
-      return status;
+    // A concurrent start may have launched the CLI while resolution awaited;
+    // reuse it rather than spawning a second one that would orphan the first.
+    if (!isChildAlive()) {
+      const failure = launchLoginChild(binaryPath, env, options);
+      if (failure) return failure;
     }
   }
 
@@ -248,6 +176,102 @@ export async function startClaudeCliLogin(options?: {
       "Claude Code CLI did not report a sign-in URL.",
   };
   return status;
+}
+
+/**
+ * Spawn the CLI sign-in and wire its output into the module state. Every
+ * handler ignores a child that is no longer the current one: a superseded
+ * process (cancelled, or killed by the idle timer) exits after its successor
+ * started and must not tear down, fail, or overwrite the successor's flow.
+ * Returns the failure status when the spawn itself throws.
+ */
+function launchLoginChild(
+  binaryPath: string,
+  env: Record<string, string | undefined>,
+  options: { cwd?: string; spawnLogin?: SpawnLogin } | undefined,
+): ClaudeCliLoginStart | null {
+  stdout = "";
+  stderr = "";
+  authorizeUrl = null;
+
+  try {
+    const spawnLogin = options?.spawnLogin ?? spawn;
+    const spawned = spawnLogin(binaryPath, ["auth", "login", "--claudeai"], {
+      cwd: options?.cwd ?? process.cwd(),
+      env: env as NodeJS.ProcessEnv,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    child = spawned;
+    armIdleTimer();
+
+    spawned.stdout?.setEncoding?.("utf8");
+    spawned.stderr?.setEncoding?.("utf8");
+    spawned.stdout?.on("data", (chunk: string | Buffer) => {
+      if (child !== spawned) return;
+      stdout = appendOutput(stdout, String(chunk));
+      const url = extractAuthorizeUrl(stdout);
+      if (url && url !== authorizeUrl) {
+        authorizeUrl = url;
+        // A submit in flight owns the terminal status until it settles.
+        if (status.state !== "verifying") {
+          status = { state: "awaiting-code", url };
+        }
+        resolveUrlWaiters(url);
+      }
+    });
+    spawned.stderr?.on("data", (chunk: string | Buffer) => {
+      if (child !== spawned) return;
+      stderr = appendOutput(stderr, String(chunk));
+      // A malformed code leaves the CLI running and prompting again, so this
+      // notice — not an exit — is how that failure is announced.
+      if (INVALID_CODE_PATTERN.test(stderr)) {
+        resolveVerificationWaiters({
+          ok: false,
+          message:
+            firstMeaningfulLine(stderr) ||
+            "Claude Code rejected the sign-in code.",
+        });
+      }
+    });
+    // A broken pipe (CLI gone while we write the code) must not take the
+    // host process down.
+    spawned.stdin?.on("error", () => {});
+    spawned.once("error", (error) => {
+      if (child !== spawned) return;
+      status = { state: "failed", message: error.message };
+      teardown();
+      resolveUrlWaiters(null);
+      resolveVerificationWaiters({ ok: false, message: error.message });
+    });
+    spawned.once("exit", (code, signal) => {
+      if (child !== spawned) return;
+      teardown();
+      if (code !== 0 && status.state !== "succeeded") {
+        status = {
+          state: "failed",
+          message: describeExit(code, signal),
+        };
+      }
+      resolveUrlWaiters(null);
+      resolveVerificationWaiters(
+        code === 0
+          ? { ok: true, message: "" }
+          : {
+              ok: false,
+              message: firstMeaningfulLine(stderr) || describeExit(code, signal),
+            },
+      );
+    });
+  } catch (error) {
+    teardown();
+    status = {
+      state: "failed",
+      message: error instanceof Error ? error.message : String(error),
+    };
+    return status;
+  }
+  return null;
 }
 
 function waitForAuthorizeUrl(timeoutMs: number): Promise<string | null> {
