@@ -455,48 +455,86 @@ const UNRELAYABLE_USER_MESSAGE =
   "[The user's latest message contained an attachment that could not be relayed to Claude (unsupported format or location). Tell the user it could not be read.]";
 
 /**
- * Latest user turn as a Claude Agent SDK prompt (string when text-only).
- *
- * Only the NEWEST real user message counts — never an older one, which would
- * make Claude redo an answered request. OpenCode's synthetic "Attached media
- * from tool result:" messages are tool output, not user turns, and are
- * skipped. When the newest user message has nothing convertible (e.g. a
- * `file://` image), the prompt says so instead of going empty.
+ * Indices of the latest user turn: every real user message after the last
+ * assistant message, in order. OpenCode queues messages the user sends while
+ * no turn runs for them; they arrive together and all await one answer.
+ * OpenCode's synthetic "Attached media from tool result:" messages are tool
+ * output, not user turns, and are skipped. When the step after the last
+ * assistant message holds only tool output, the newest real user message
+ * stands in — never an older one, which would make Claude redo an answered
+ * request. Empty without any real user message.
+ */
+function latestUserTurn(
+  messages: Array<{ role?: string; content?: unknown }>,
+): number[] {
+  const turn: number[] = [];
+  // An assistant message was passed before any real user message.
+  let toolStep = false;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg?.role === "assistant") {
+      if (turn.length > 0) break;
+      toolStep = true;
+    } else if (
+      msg?.role === "user" &&
+      extractTextContent(msg.content).trim() !== SYNTHETIC_TOOL_MEDIA_PROMPT
+    ) {
+      turn.unshift(i);
+      if (toolStep) break;
+    }
+  }
+  return turn;
+}
+
+/**
+ * One user message as prompt content: its blocks when it carries
+ * attachments, else its text. When parts were sent but none converted (e.g.
+ * a `file://` image), says so instead of going silent; a truly empty
+ * message yields "".
+ */
+function userMessagePrompt(content: unknown): string | AnthropicContentBlock[] {
+  const blocks = contentHasAttachments(content)
+    ? openaiContentToAnthropicBlocks(content)
+    : [];
+  if (blocks.length > 0) return blocks;
+  const text = extractTextContent(content).trim();
+  if (text) return text;
+  const hasParts =
+    Array.isArray(content) &&
+    content.some(
+      (part) =>
+        !part ||
+        typeof part !== "object" ||
+        !("type" in part) ||
+        part.type !== "text",
+    );
+  return hasParts ? UNRELAYABLE_USER_MESSAGE : "";
+}
+
+/**
+ * Latest user turn (see `latestUserTurn`) as a Claude Agent SDK prompt,
+ * string when text-only. Queued messages are combined in order: texts are
+ * separated by a blank line, attachments keep their position.
  */
 export function latestUserPrompt(
   messages: Array<{ role?: string; content?: unknown }>,
 ): string | SdkUserPrompt {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg?.role !== "user") continue;
-    const content = msg.content;
-    const text = extractTextContent(content).trim();
-    if (text === SYNTHETIC_TOOL_MEDIA_PROMPT) continue;
-    const blocks = contentHasAttachments(content)
-      ? openaiContentToAnthropicBlocks(content)
-      : [];
-    if (blocks.length > 0) {
-      return {
-        type: "user",
-        message: { role: "user", content: blocks },
-        parent_tool_use_id: null,
-      };
-    }
-    if (text) return text;
-    // Parts were sent but none converted (file:// image, unknown shape):
-    // say so rather than going silent. A truly empty message stays "".
-    const hasParts =
-      Array.isArray(content) &&
-      content.some(
-        (part) =>
-          !part ||
-          typeof part !== "object" ||
-          !("type" in part) ||
-          part.type !== "text",
-      );
-    return hasParts ? UNRELAYABLE_USER_MESSAGE : "";
+  const parts = latestUserTurn(messages)
+    .map((i) => userMessagePrompt(messages[i]!.content))
+    .filter((part) => part.length > 0);
+  if (parts.every((part) => typeof part === "string")) {
+    return parts.join("\n\n");
   }
-  return "";
+  return {
+    type: "user",
+    message: {
+      role: "user",
+      content: parts.flatMap((part) =>
+        typeof part === "string" ? [{ type: "text" as const, text: part }] : part,
+      ),
+    },
+    parent_tool_use_id: null,
+  };
 }
 
 export async function* promptAsStream(
@@ -516,7 +554,7 @@ export async function* promptAsStream(
 /**
  * Conversation-history transfer.
  *
- * The Agent SDK turn only receives the latest user message; earlier context
+ * The Agent SDK turn only receives the latest user turn; earlier context
  * comes from resuming the sticky Claude session. When no session can be
  * resumed (first claude-code turn after a model switch, lost store, deleted
  * session file), the proxy injects the serialized prior conversation instead
@@ -602,18 +640,16 @@ function serializeHistoryMessage(
   return null;
 }
 
-/** Messages before the latest user turn — the context Claude is missing. */
+/**
+ * Messages before the latest user turn — the context Claude is missing. Ends
+ * before the FIRST message of that turn: queued messages travel in the
+ * prompt and must not repeat in the transcript.
+ */
 export function priorMessagesOf(
   messages: ConversationHistoryMessage[],
 ): ConversationHistoryMessage[] {
-  let lastUser = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === "user") {
-      lastUser = i;
-      break;
-    }
-  }
-  return lastUser > 0 ? messages.slice(0, lastUser) : [];
+  const start = latestUserTurn(messages)[0] ?? 0;
+  return messages.slice(0, start);
 }
 
 /** Below this, a partially fitting older entry is dropped, not truncated. */

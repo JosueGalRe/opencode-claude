@@ -36,7 +36,7 @@ export type ClaudeSessionBinding = {
   cwd?: string;
   /**
    * Host messages the bound Claude session has seen, up to (not including)
-   * the last user message delivered to it.
+   * the first user message of the latest turn delivered to it.
    */
   history?: HistoryFingerprint;
   updatedAt: number;
