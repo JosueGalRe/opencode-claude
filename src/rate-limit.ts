@@ -141,21 +141,111 @@ export function isClaudeRateLimitText(text: string): boolean {
   );
 }
 
+const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Full-precision wall-clock formatter for `zone`; undefined for an unknown zone. */
+function zoneFormatter(zone: string): Intl.DateTimeFormat | undefined {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: zone,
+      year: "numeric",
+      month: "numeric",
+      day: "numeric",
+      hour: "numeric",
+      minute: "numeric",
+      second: "numeric",
+      hourCycle: "h23",
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Wall clock of instant `t` in the formatter's zone, encoded as a UTC epoch. */
+function wallClockAsUtc(fmt: Intl.DateTimeFormat, t: number): number {
+  const parts = fmt.formatToParts(new Date(t));
+  const get = (type: Intl.DateTimeFormatPartTypes) =>
+    Number(parts.find((p) => p.type === type)?.value);
+  return Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour") % 24,
+    get("minute"),
+    get("second"),
+  );
+}
+
 /**
- * Parse "resets 1:10am (Europe/Kyiv)" / "reset at 2026-08-09T01:10:00" into
- * epoch ms. Returns undefined when no reset hint is present.
+ * Instant whose wall clock in the formatter's zone is `wall` (a UTC-encoded
+ * wall time). Two offset passes settle DST transitions; a wall time skipped
+ * by a spring-forward gap does not exist and yields undefined.
+ */
+function zonedWallToEpoch(fmt: Intl.DateTimeFormat, wall: number): number | undefined {
+  const offsetAt = (t: number) => wallClockAsUtc(fmt, t) - Math.floor(t / 1000) * 1000;
+  let t = wall - offsetAt(wall);
+  t = wall - offsetAt(t);
+  return wallClockAsUtc(fmt, t) === wall ? t : undefined;
+}
+
+/**
+ * Parse a reset hint into epoch ms. Returns undefined when no reset hint is
+ * present. Claude Code formats reset times (`resets ${time} (${zone})`) as:
+ * - within 24h: "1:10am (Europe/Kyiv)", "5pm (UTC)";
+ * - further out: "Oct 6, 1pm (UTC)", "Oct 6, 1:30pm (America/New_York)";
+ * - in another year: "Jan 2, 2027, 1pm (UTC)";
+ * plus ISO "reset at 2026-08-09T01:10:00" / "resets 2026-10-06 13:00 UTC".
  */
 export function parseResetTimeFromText(
   text: string,
   now: number = Date.now(),
 ): number | undefined {
-  // ISO-ish absolute timestamp
-  const iso = /resets?\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)/i.exec(
-    text,
-  );
+  // ISO-ish absolute timestamp; a trailing " UTC" stands for "Z".
+  const iso =
+    /resets?\s+(?:at\s+)?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?)(\s*UTC\b)?/i.exec(
+      text,
+    );
   if (iso) {
-    const parsed = Date.parse(iso[1].includes("T") ? iso[1] : iso[1].replace(" ", "T"));
+    const stamp = iso[1].replace(" ", "T") + (!iso[2] && iso[3] ? "Z" : "");
+    const parsed = Date.parse(stamp);
     if (Number.isFinite(parsed)) return parsed;
+  }
+
+  // "resets Oct 6, 1pm (UTC)" / "resets Jan 2, 2027, 1:30pm (America/New_York)"
+  const dated =
+    /resets?\s+(?:at\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?(?:,\s*|\s+)(?:at\s+)?(\d{1,2})(?::(\d{2}))?[\s\u202f]*(am|pm)?\s*\(([^)]+)\)/i.exec(
+      text,
+    );
+  if (dated) {
+    const month = MONTHS.indexOf(dated[1].toLowerCase());
+    const day = Number(dated[2]);
+    let hour = Number(dated[4]);
+    const minute = dated[5] === undefined ? 0 : Number(dated[5]);
+    const meridiem = dated[6]?.toLowerCase();
+    if (dated[5] === undefined && !meridiem) return undefined;
+    if (meridiem) {
+      if (hour < 1 || hour > 12) return undefined;
+      if (meridiem === "pm" && hour < 12) hour += 12;
+      if (meridiem === "am" && hour === 12) hour = 0;
+    }
+    if (hour > 23 || minute > 59) return undefined;
+    const fmt = zoneFormatter(dated[7].trim());
+    if (!fmt) return undefined; // unknown IANA zone
+    const resolve = (year: number) => {
+      const wall = Date.UTC(year, month, day, hour, minute);
+      // Reject overflowed dates such as "Feb 30".
+      if (new Date(wall).getUTCMonth() !== month) return undefined;
+      return zonedWallToEpoch(fmt, wall);
+    };
+    if (dated[3] !== undefined) return resolve(Number(dated[3]));
+    // No year: the CLI omits it for the current year, so take the nearest
+    // occurrence that is not long past (Dec 30 → "Jan 2" is next year).
+    const year = new Date(wallClockAsUtc(fmt, now)).getUTCFullYear();
+    for (const y of [year - 1, year, year + 1]) {
+      const t = resolve(y);
+      if (t !== undefined && t > now - 24 * 3_600_000) return t;
+    }
+    return undefined;
   }
 
   // "resets 1:10am (Europe/Kyiv)" / "resets at 13:05 (UTC)" / "resets 5pm (UTC)"
