@@ -398,12 +398,20 @@ export function openaiContentToAnthropicBlocks(
 
 export type McpToolResultContent =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  | { type: "image"; data: string; mimeType: string }
+  | {
+      type: "resource";
+      resource: { uri: string; mimeType: string; blob: string };
+    };
 
 /**
  * Convert OpenAI-compatible tool result content into MCP result blocks.
- * OpenCode's read tool returns images as file attachments on the tool result;
- * those must stay attached when the parked Claude SDK tool call resumes.
+ * OpenCode's read tool returns images and PDFs as file attachments on the
+ * tool result; those must stay attached when the parked Claude SDK tool call
+ * resumes. Base64 documents travel as MCP embedded `resource` blobs (Claude
+ * Code saves them to disk and hands the model the path); URL-sourced media
+ * cannot ride in an MCP result, so the model gets the URL as text instead of
+ * a silent drop.
  */
 export function openaiToolResultToMcpContent(
   content: unknown,
@@ -414,19 +422,46 @@ export function openaiToolResultToMcpContent(
       result.push(block);
       continue;
     }
-    if (block.type === "image" && block.source.type === "base64") {
+    if (block.source.type === "url") {
+      result.push({
+        type: "text",
+        text: `[${block.type === "image" ? "Image" : "Document"} attachment could not be relayed inline; source URL: ${block.source.url}]`,
+      });
+      continue;
+    }
+    if (block.type === "image") {
       result.push({
         type: "image",
         data: block.source.data,
         mimeType: block.source.media_type,
       });
+      continue;
     }
+    const mimeType = block.source.media_type;
+    const extension = mimeType === "application/pdf" ? ".pdf" : "";
+    result.push({
+      type: "resource",
+      resource: {
+        uri: `opencode://tool-result/attachment-${result.length + 1}${extension}`,
+        mimeType,
+        blob: block.source.data,
+      },
+    });
   }
   return result;
 }
 
+const UNRELAYABLE_USER_MESSAGE =
+  "[The user's latest message contained an attachment that could not be relayed to Claude (unsupported format or location). Tell the user it could not be read.]";
+
 /**
  * Latest user turn as a Claude Agent SDK prompt (string when text-only).
+ *
+ * Only the NEWEST real user message counts — never an older one, which would
+ * make Claude redo an answered request. OpenCode's synthetic "Attached media
+ * from tool result:" messages are tool output, not user turns, and are
+ * skipped. When the newest user message has nothing convertible (e.g. a
+ * `file://` image), the prompt says so instead of going empty.
  */
 export function latestUserPrompt(
   messages: Array<{ role?: string; content?: unknown }>,
@@ -435,18 +470,31 @@ export function latestUserPrompt(
     const msg = messages[i];
     if (msg?.role !== "user") continue;
     const content = msg.content;
-    if (!contentHasAttachments(content)) {
-      const text = extractTextContent(content).trim();
-      if (text) return text;
-      continue;
+    const text = extractTextContent(content).trim();
+    if (text === SYNTHETIC_TOOL_MEDIA_PROMPT) continue;
+    const blocks = contentHasAttachments(content)
+      ? openaiContentToAnthropicBlocks(content)
+      : [];
+    if (blocks.length > 0) {
+      return {
+        type: "user",
+        message: { role: "user", content: blocks },
+        parent_tool_use_id: null,
+      };
     }
-    const blocks = openaiContentToAnthropicBlocks(content);
-    if (blocks.length === 0) continue;
-    return {
-      type: "user",
-      message: { role: "user", content: blocks },
-      parent_tool_use_id: null,
-    };
+    if (text) return text;
+    // Parts were sent but none converted (file:// image, unknown shape):
+    // say so rather than going silent. A truly empty message stays "".
+    const hasParts =
+      Array.isArray(content) &&
+      content.some(
+        (part) =>
+          !part ||
+          typeof part !== "object" ||
+          !("type" in part) ||
+          part.type !== "text",
+      );
+    return hasParts ? UNRELAYABLE_USER_MESSAGE : "";
   }
   return "";
 }
@@ -500,11 +548,17 @@ export function historyMaxChars(): number {
     : DEFAULT_HISTORY_MAX_CHARS;
 }
 
+/** Keep head and tail of `text`; the result (marker included) is ≤ `max`. */
 function truncateMiddle(text: string, max: number): string {
   if (text.length <= max) return text;
-  const head = text.slice(0, Math.floor(max / 2));
-  const tail = text.slice(text.length - Math.floor(max / 2));
-  return `${head}\n… [${text.length - max} chars omitted] …\n${tail}`;
+  // The omitted count never exceeds text.length, so this marker is the
+  // longest the final one can be.
+  const markerRoom = `\n… [${text.length} chars omitted] …\n`.length;
+  const keep = max - markerRoom;
+  if (keep <= 0) return text.slice(0, Math.max(0, max));
+  const head = text.slice(0, Math.ceil(keep / 2));
+  const tail = text.slice(text.length - Math.floor(keep / 2));
+  return `${head}\n… [${text.length - keep} chars omitted] …\n${tail}`;
 }
 
 function serializeHistoryMessage(
@@ -562,9 +616,16 @@ export function priorMessagesOf(
   return lastUser > 0 ? messages.slice(0, lastUser) : [];
 }
 
+/** Below this, a partially fitting older entry is dropped, not truncated. */
+const MIN_TRUNCATED_ENTRY_CHARS = 200;
+const TRANSCRIPT_SEPARATOR = "\n\n";
+
 /**
  * Serialize prior conversation into a compact transcript, keeping the NEWEST
- * messages within the char budget (older turns are dropped first).
+ * messages within the char budget (older turns are dropped first). The entry
+ * at the budget boundary is middle-truncated to the remaining room, so an
+ * oversized newest message never blanks the whole history. Separators and
+ * the omission header count against the budget.
  */
 export function buildConversationTranscript(
   messages: ConversationHistoryMessage[],
@@ -578,20 +639,39 @@ export function buildConversationTranscript(
   }
   if (serialized.length === 0) return "";
 
+  const whole = serialized.join(TRANSCRIPT_SEPARATOR);
+  if (whole.length <= maxChars) return whole;
+
+  // Something will be omitted: reserve room for the worst-case header.
+  const budget =
+    maxChars -
+    `[${serialized.length} earlier message(s) omitted]${TRANSCRIPT_SEPARATOR}`
+      .length;
   const kept: string[] = [];
   let total = 0;
   let omitted = 0;
   for (let i = serialized.length - 1; i >= 0; i--) {
     const entry = serialized[i];
-    if (total + entry.length > maxChars) {
-      omitted = i + 1;
-      break;
+    const separator = kept.length > 0 ? TRANSCRIPT_SEPARATOR.length : 0;
+    const room = budget - total - separator;
+    if (entry.length <= room) {
+      kept.unshift(entry);
+      total += separator + entry.length;
+      continue;
     }
-    kept.unshift(entry);
-    total += entry.length;
+    if (room >= MIN_TRUNCATED_ENTRY_CHARS || (kept.length === 0 && room > 0)) {
+      kept.unshift(truncateMiddle(entry, room));
+      omitted = i;
+    } else {
+      omitted = i + 1;
+    }
+    break;
   }
-  const header = omitted > 0 ? `[${omitted} earlier message(s) omitted]\n\n` : "";
-  return header + kept.join("\n\n");
+  const header =
+    omitted > 0
+      ? `[${omitted} earlier message(s) omitted]${kept.length > 0 ? TRANSCRIPT_SEPARATOR : ""}`
+      : "";
+  return header + kept.join(TRANSCRIPT_SEPARATOR);
 }
 
 /**

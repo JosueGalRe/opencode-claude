@@ -24,36 +24,57 @@ export function metaSystemPrompt(messages: MessageLike[]): string {
     .join("\n");
 }
 
-function userText(messages: MessageLike[]): string {
-  return messages
-    .filter((m) => m.role === "user")
-    .map((m) => extractTextContent(m.content))
-    .join("\n");
+/**
+ * True when the opening line of any system message names one of `phrases`.
+ * OpenCode's meta agents (title, summary, compaction) announce their role
+ * in that first line; the rest of the system prompt carries forwarded
+ * AGENTS.md / instructions / MCP notes whose wording must never turn a
+ * normal turn into a meta request.
+ */
+function systemOpensWith(messages: MessageLike[], phrases: string[]): boolean {
+  return messages.some((m) => {
+    if (m.role !== "system") return false;
+    const text = extractTextContent(m.content).trimStart();
+    const end = text.indexOf("\n");
+    const opening = (end === -1 ? text : text.slice(0, end)).toLowerCase();
+    return phrases.some((phrase) => opening.includes(phrase));
+  });
+}
+
+/** Newest user message only — earlier turns may quote meta prompts. */
+function latestUserText(messages: MessageLike[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === "user") {
+      return extractTextContent(messages[i].content).toLowerCase();
+    }
+  }
+  return "";
 }
 
 export function isTitleGenerationRequest(messages: MessageLike[]): boolean {
-  const system = metaSystemPrompt(messages).toLowerCase();
-  return (
-    system.includes("title generator") ||
-    system.includes("generate a short title") ||
-    system.includes("generate a brief title") ||
-    system.includes("output only a thread title")
-  );
+  return systemOpensWith(messages, [
+    "title generator",
+    "generate a short title",
+    "generate a brief title",
+    "output only a thread title",
+  ]);
 }
 
 export function isSummaryGenerationRequest(messages: MessageLike[]): boolean {
-  const system = metaSystemPrompt(messages).toLowerCase();
   if (
-    system.includes("anchored context summarization") ||
-    system.includes("summarizing, compacting, or merging context") ||
-    system.includes("tasked with summarizing conversations") ||
-    system.includes("write like a pull request description") ||
-    system.includes("summarize what was done in this conversation")
+    systemOpensWith(messages, [
+      "context summarization agent",
+      "anchored context summarization",
+      "summarizing, compacting, or merging context",
+      "tasked with summarizing conversations",
+      "write like a pull request description",
+      "summarize what was done in this conversation",
+    ])
   ) {
     return true;
   }
 
-  const user = userText(messages).toLowerCase();
+  const user = latestUserText(messages);
   return (
     OPENCODE_UPDATE_SUMMARY_PATTERN.test(user) ||
     user.includes(

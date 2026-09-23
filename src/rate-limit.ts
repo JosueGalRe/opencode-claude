@@ -45,6 +45,12 @@ export type ClaudeRateLimitState = {
 /** When a hard limit error carries no reset time, block new turns briefly. */
 const FALLBACK_BLOCK_MS = 10 * 60 * 1000;
 
+/**
+ * A stored `rejected` event older than this no longer describes the limit a
+ * fresh error hit; its resetsAt must not be reused as the block deadline.
+ */
+const REJECTION_EVENT_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+
 function storePath(): string {
   const override = process.env.OPENCODE_CLAUDE_RATE_LIMIT_STORE;
   if (override && override.trim()) return override.trim();
@@ -120,14 +126,18 @@ export function recordRateLimitInfo(info: unknown): ClaudeRateLimitState | null 
   return next;
 }
 
-/** Match human-readable hard-limit error text from the Agent SDK / API. */
+/**
+ * Match human-readable hard-limit error text from the Agent SDK / API. A bare
+ * HTTP status ("API Error: 429 …") is not enough — the text has to name the
+ * limit. Claude Code words subscription limits as "You've hit your session
+ * limit", "You've hit your weekly limit", "You've reached your … limit".
+ */
 export function isClaudeRateLimitText(text: string): boolean {
   return (
-    /hit your (session|usage) limit/i.test(text) ||
+    /\b(hit|reached) your [^·\n]*?limit/i.test(text) ||
     /usage limit reached/i.test(text) ||
     /rate[ -]?limit/i.test(text) ||
-    /too many requests/i.test(text) ||
-    /\b429\b/.test(text)
+    /too many requests/i.test(text)
   );
 }
 
@@ -148,12 +158,16 @@ export function parseResetTimeFromText(
     if (Number.isFinite(parsed)) return parsed;
   }
 
-  // "resets 1:10am (Europe/Kyiv)" / "resets at 13:05 (UTC)" style
+  // "resets 1:10am (Europe/Kyiv)" / "resets at 13:05 (UTC)" / "resets 5pm (UTC)"
   const wall =
-    /resets?\s+(?:at\s+)?(\d{1,2}):(\d{2})\s*(am|pm)?\s*\(([^)]+)\)/i.exec(text);
+    /resets?\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*\(([^)]+)\)/i.exec(
+      text,
+    );
   if (!wall) return undefined;
+  // Hours without minutes need a meridiem; a lone "resets 5 (UTC)" is noise.
+  if (wall[2] === undefined && !wall[3]) return undefined;
   let hour = Number(wall[1]);
-  const minute = Number(wall[2]);
+  const minute = wall[2] === undefined ? 0 : Number(wall[2]);
   const meridiem = wall[3]?.toLowerCase();
   const zone = wall[4].trim();
   if (meridiem === "pm" && hour < 12) hour += 12;
@@ -179,7 +193,9 @@ export function parseResetTimeFromText(
     const h = Number(parts.find((p) => p.type === "hour")?.value);
     const m = Number(parts.find((p) => p.type === "minute")?.value);
     const cur = (h === 24 ? 0 : h) * 60 + m;
-    if (Math.abs(cur - target) <= 2) return t;
+    const diff = Math.abs(cur - target);
+    // Circular compare: 23:58 is 2 minutes from a 00:00 target.
+    if (Math.min(diff, 1440 - diff) <= 2) return t;
   }
   return undefined;
 }
@@ -187,20 +203,47 @@ export function parseResetTimeFromText(
 /**
  * Record a hard-limit error message. Returns the updated state, or null when
  * the text is not a limit error.
+ *
+ * Block deadline, in order: the reset parsed from the text; the resetsAt of a
+ * recent `rejected` rate_limit_event (the SDK emits it right before the
+ * failing result); an already-active confirmed block; else a short fallback.
+ * The stored resetsAt of any other event (e.g. an `allowed` seven_day window
+ * days away) describes an unrelated window and never becomes the deadline.
  */
 export function recordRateLimitErrorText(
   text: string,
 ): ClaudeRateLimitState | null {
   if (!text || !isClaudeRateLimitText(text)) return null;
-  const prev = readState() ?? { limited: false, updatedAt: 0 };
-  const resetsAt = parseResetTimeFromText(text) ?? prev.resetsAt;
+  const stored: ClaudeRateLimitState = readState() ?? {
+    limited: false,
+    updatedAt: 0,
+  };
+  const { resetsAt: prevResetsAt, ...prev } = stored;
   const now = Date.now();
+  const parsed = parseResetTimeFromText(text, now);
+  const rejectionResetsAt =
+    prev.status === "rejected" &&
+    now - prev.updatedAt < REJECTION_EVENT_MAX_AGE_MS &&
+    prevResetsAt !== undefined &&
+    prevResetsAt > now
+      ? prevResetsAt
+      : undefined;
+  const activeUntil =
+    prev.limited && prev.limitedUntil !== undefined && prev.limitedUntil > now
+      ? prev.limitedUntil
+      : undefined;
+  const resetsAt =
+    parsed !== undefined && parsed > now
+      ? parsed
+      : (rejectionResetsAt ??
+        (activeUntil !== undefined && activeUntil === prevResetsAt
+          ? prevResetsAt
+          : undefined));
   const next: ClaudeRateLimitState = {
     ...prev,
     limited: true,
-    limitedUntil:
-      resetsAt && resetsAt > now ? resetsAt : now + FALLBACK_BLOCK_MS,
-    ...(resetsAt ? { resetsAt } : {}),
+    limitedUntil: resetsAt ?? activeUntil ?? now + FALLBACK_BLOCK_MS,
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
     message: text.trim().slice(0, 300),
     updatedAt: now,
   };
