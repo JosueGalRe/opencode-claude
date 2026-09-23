@@ -20,6 +20,10 @@
 
 ### Fixes
 
+- **Meta requests keep the Claude Code preset** — title/summary turns used a
+  custom `systemPrompt` string that replaced the preset entirely; they now
+  append to it so the request fingerprint matches normal Claude Code turns.
+
 - **Rate-limit gate**: a transient 429 or unparseable limit message could
   reuse an unrelated window's reset (e.g. weekly) and block every turn for
   days. Only a recent rejection's reset is reused, otherwise the 10-minute

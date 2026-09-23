@@ -1119,6 +1119,32 @@ async function handleChatCompletions(
           "This is a single-turn text transformation. Return only the requested summary. Do not inspect files, execute commands, or use tools.",
         ].filter(Boolean).join("\n\n")
     : undefined;
+  const claudeCodeSystemPrompt: {
+    type: "preset";
+    preset: "claude_code";
+    append?: string;
+  } = { type: "preset", preset: "claude_code" };
+  if (isMetaRequest) {
+    // Meta turns keep the Claude Code preset so the request fingerprint
+    // matches normal turns: Anthropic rejects subscription credentials on
+    // requests that don't look like Claude Code (anomalyco/opencode#7456).
+    // OpenCode V2 generates titles with the session model, so these turn
+    // reach the Claude credential in v2 where v1 routed them to small_model.
+    claudeCodeSystemPrompt.append = utilitySystemPrompt;
+  } else if (bridgeOpenCodeTools) {
+    claudeCodeSystemPrompt.append =
+      [
+        "You are running inside OpenCode. Built-in Claude Code tools are disabled. Use only the mcp__opencode__* tools provided for this turn; they execute via OpenCode.",
+        "Batch independent tool calls into a single turn instead of calling them one at a time.",
+        ...(hasTodoWrite
+          ? [
+              "For any multi-step work, ALWAYS write the plan with the mcp__opencode__todowrite tool and keep it updated as you progress. A plan that only exists in your text is lost when the session is restored or handed to another agent.",
+            ]
+          : []),
+      ].join(" ") + (openCodeContext ? `\n\n${openCodeContext}` : "");
+  } else if (openCodeContext) {
+    claudeCodeSystemPrompt.append = openCodeContext;
+  }
   handle = await queryStarter({
     prompt: queryPrompt,
     cwd,
@@ -1145,25 +1171,7 @@ async function handleChatCompletions(
     // checks are skipped; anything else is denied without prompting.
     permissionMode: bridgeOpenCodeTools ? "bypassPermissions" : "dontAsk",
     allowDangerouslySkipPermissions: bridgeOpenCodeTools,
-    systemPrompt: utilitySystemPrompt || {
-      type: "preset",
-      preset: "claude_code",
-      ...(bridgeOpenCodeTools
-        ? {
-            append: [
-              "You are running inside OpenCode. Built-in Claude Code tools are disabled. Use only the mcp__opencode__* tools provided for this turn; they execute via OpenCode.",
-              "Batch independent tool calls into a single turn instead of calling them one at a time.",
-              ...(hasTodoWrite
-                ? [
-                    "For any multi-step work, ALWAYS write the plan with the mcp__opencode__todowrite tool and keep it updated as you progress. A plan that only exists in your text is lost when the session is restored or handed to another agent.",
-                  ]
-                : []),
-            ].join(" ") + (openCodeContext ? `\n\n${openCodeContext}` : ""),
-          }
-        : openCodeContext
-          ? { append: openCodeContext }
-          : {}),
-    },
+    systemPrompt: claudeCodeSystemPrompt,
   });
 
   const bridge: ParkedBridge = {

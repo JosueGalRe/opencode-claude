@@ -961,10 +961,14 @@ async function main() {
       // requests must not forward the selected effort.
       assert.equal(titleOptions!.effort, undefined);
       assert.equal(titleOptions!.resume, undefined);
-      assert.equal(
-        titleOptions!.systemPrompt,
-        "You generate short session titles. Follow the requested output format exactly.",
-      );
+      // Meta requests must keep the claude_code preset (Anthropic rejects
+      // subscription credentials on non-Claude-Code-looking requests);
+      // the utility instruction rides along as an append.
+      assert.deepEqual(titleOptions!.systemPrompt, {
+        type: "preset",
+        preset: "claude_code",
+        append: "You generate short session titles. Follow the requested output format exactly.",
+      });
       assert.match(String(titleOptions!.prompt), /<request>\nExplain how binary search trees work\n<\/request>/);
     } finally {
       setClaudeQueryStarter(null);
