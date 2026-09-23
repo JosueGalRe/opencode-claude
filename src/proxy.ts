@@ -1107,6 +1107,7 @@ async function handleChatCompletions(
       : promptAsStream(contextualPrompt);
 
   const hasTodoWrite = openCodeToolNames.includes("todowrite");
+  const hasExecute = openCodeToolNames.includes("execute");
   const openCodeContext =
     isMetaRequest || !systemContextForwardingEnabled()
       ? ""
@@ -1139,6 +1140,11 @@ async function handleChatCompletions(
         ...(hasTodoWrite
           ? [
               "For any multi-step work, ALWAYS write the plan with the mcp__opencode__todowrite tool and keep it updated as you progress. A plan that only exists in your text is lost when the session is restored or handed to another agent.",
+            ]
+          : []),
+        ...(hasExecute
+          ? [
+              "Code mode: mcp__opencode__execute({ code }) runs JavaScript in OpenCode's confined runtime — prefer it over many direct mcp__opencode__* calls when several tool operations must be chained or batched into one result. Inside `code` the mcp__opencode__* tools are not visible; call host tools as tools.<path>(input) and discover exact paths and signatures with the synchronous search({ query }) function before using them. `fetch` is available; imports, filesystem access and timers are not. Await every call whose result you use (Promise.all for independent calls) and return the composed result explicitly.",
             ]
           : []),
       ].join(" ") + (openCodeContext ? `\n\n${openCodeContext}` : "");

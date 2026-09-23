@@ -1185,6 +1185,14 @@ async function main() {
                 parameters: { type: "object", properties: {} },
               },
             },
+            {
+              type: "function",
+              function: {
+                name: "execute",
+                description: "Run JavaScript in a confined Code Mode runtime",
+                parameters: { type: "object", properties: {} },
+              },
+            },
           ],
           messages: [{ role: "user", content: "plan something" }],
         }),
@@ -1212,6 +1220,8 @@ async function main() {
       assert.equal(aliases?.TodoWrite, "mcp__opencode__todowrite");
       assert.equal(aliases?.todowrite, "mcp__opencode__todowrite");
       const sysPrompt = seenParams.systemPrompt as { append?: string };
+      assert.match(sysPrompt.append ?? "", /Code mode: mcp__opencode__execute/);
+      assert.match(sysPrompt.append ?? "", /search\(\{ query \}\)/);
       assert.match(sysPrompt.append ?? "", /mcp__opencode__todowrite/);
       assert.match(sysPrompt.append ?? "", /[Bb]atch independent tool calls/);
 

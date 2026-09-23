@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Code-mode guidance for V2's `execute` tool** — when the host offers
+  `execute`, bridged turns now tell Claude how to use it:
+  `mcp__opencode__execute({ code })` runs JS in OpenCode's confined runtime,
+  tools inside are called as `tools.<path>(input)` and discovered with the
+  synchronous `search({ query })`; `fetch` works, imports/fs/timers don't.
+  Verified live: Claude discovers the runtime catalog via `search` and
+  composes calls through the bridge.
+
 ### Security
 
 - **Proxy requires a secret** — `POST /v1/chat/completions` now needs a
