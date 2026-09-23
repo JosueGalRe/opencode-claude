@@ -97,14 +97,14 @@ import {
   requestKeyNamespace,
 } from "./request-kind.js";
 import {
-  addUniqueAssistantUsageState,
   formatCompactNote,
-  resolveOpenCodeUsage,
+  TurnUsage,
   usageFromAssistantEvent,
   usageFromSdkResult,
   usageFromSdkTurnResult,
-  type AssistantUsageState,
+  usageFromStreamEvent,
   type OpenAIUsage,
+  type StreamUsageEvent,
 } from "./usage.js";
 
 const SHARED_PROXY_HEALTH_TIMEOUT_MS = 750;
@@ -676,12 +676,13 @@ function answeredToolStepPrompt(
 }
 
 /**
- * `delta`: host messages after the last user message the bound Claude
- * session was given (it starts with that message). Claude's own output —
- * assistant messages, tool results, promoted media — and user messages still
- * waiting for an answer are expected there. A user message followed by an
- * assistant answer means another provider answered a turn this session never
- * saw: the user switched the OpenCode session away and back.
+ * `delta`: host messages from the first user message of the latest turn the
+ * bound Claude session was given (queued user messages travel together).
+ * Claude's own output — assistant messages, tool results, promoted media —
+ * and user messages still waiting for an answer are expected there. A user
+ * message followed by an assistant answer means another provider answered a
+ * turn this session never saw: the user switched the OpenCode session away
+ * and back.
  */
 function answeredElsewhere(delta: OpenAIMessage[]): boolean {
   let sawAssistant = false;
@@ -748,7 +749,7 @@ async function handleChatCompletions(
   const stream = body.stream !== false;
   const isMetaRequest = metaKind !== null;
 
-  // A resumed Claude session only receives the latest user message; the rest
+  // A resumed Claude session only receives the latest user turn; the rest
   // of the host array must already be in its transcript. Two ways it is not:
   // - host-side history rewrites (context-pruning plugins like DCP, message
   //   transforms): the prefix the session saw no longer hashes the same;
@@ -1573,8 +1574,7 @@ async function collectTurnResponse(
 
   let content = "";
   let reasoning = "";
-  let usageState: AssistantUsageState = { aggregate: null, latest: null };
-  let resultUsage: OpenAIUsage | null = null;
+  const turnUsage = new TurnUsage(bridge.seenAssistantUsageIds);
   let lastErrorNorm: string | null = null;
   let errorText: string | null = null;
   let sawContent = false;
@@ -1600,18 +1600,15 @@ async function collectTurnResponse(
       } else if (mapped.kind === "reasoning") {
         if (!suppressReasoning) reasoning += mapped.text;
       } else if (mapped.kind === "usage-delta") {
-        usageState = addUniqueAssistantUsageState(
-          usageState,
-          mapped.usage,
-          mapped.messageId,
-          bridge.seenAssistantUsageIds,
-        );
+        turnUsage.assistant(mapped.usage, mapped.messageId);
+      } else if (mapped.kind === "usage-stream") {
+        turnUsage.stream(mapped.usage);
       } else if (mapped.kind === "usage") {
-        resultUsage = mapped.usage;
+        turnUsage.result(mapped.usage);
       } else if (mapped.kind === "error") {
         // SDK emits the failure twice (result event + iterator throw) —
         // keep one copy, and keep any usage that came with it.
-        if (mapped.usage) resultUsage = mapped.usage;
+        if (mapped.usage) turnUsage.result(mapped.usage);
         forgetDeadSession(bridge.conversationKey, mapped.text);
         noteError(mapped.text);
       }
@@ -1623,7 +1620,7 @@ async function collectTurnResponse(
     noteError(message);
   }
 
-  const usage = resolveOpenCodeUsage(usageState, resultUsage);
+  const usage = turnUsage.resolve();
 
   // Buffered responses have not committed HTTP headers yet. Even if an agent
   // produced partial work first, preserve the real 429 so OpenCode starts its
@@ -1899,8 +1896,7 @@ function streamOpenAIResponse(
       });
 
       let finishReason: string | null = "stop";
-      let usageState: AssistantUsageState = { aggregate: null, latest: null };
-      let resultUsage: OpenAIUsage | null = null;
+      const turnUsage = new TurnUsage(bridge.seenAssistantUsageIds);
       let lastErrorNorm: string | null = null;
       const sendError = (text: string) => {
         const norm = normalizeClaudeErrorText(text);
@@ -2013,21 +2009,20 @@ function streamOpenAIResponse(
           }
 
           if (mapped.kind === "usage-delta") {
-            usageState = addUniqueAssistantUsageState(
-              usageState,
-              mapped.usage,
-              mapped.messageId,
-              bridge.seenAssistantUsageIds,
-            );
+            turnUsage.assistant(mapped.usage, mapped.messageId);
+          }
+
+          if (mapped.kind === "usage-stream") {
+            turnUsage.stream(mapped.usage);
           }
 
           if (mapped.kind === "usage") {
-            resultUsage = mapped.usage;
+            turnUsage.result(mapped.usage);
           }
 
           if (mapped.kind === "error") {
             finishReason = "stop";
-            if (mapped.usage) resultUsage = mapped.usage;
+            if (mapped.usage) turnUsage.result(mapped.usage);
             forgetDeadSession(bridge.conversationKey, mapped.text);
             log.warn("[opencode-claude] mid-stream turn error", {
               conversationKey: bridge.conversationKey,
@@ -2052,7 +2047,7 @@ function streamOpenAIResponse(
         finishReason = "stop";
       }
 
-      const usage = resolveOpenCodeUsage(usageState, resultUsage);
+      const usage = turnUsage.resolve();
       if (!streamClosed) {
         send({
           id: completionId,
@@ -2093,6 +2088,7 @@ type MappedEvent =
   | { kind: "park"; tools: ParkedToolCall[] }
   | { kind: "usage"; usage: OpenAIUsage }
   | { kind: "usage-delta"; usage: OpenAIUsage; messageId: string | null }
+  | { kind: "usage-stream"; usage: StreamUsageEvent }
   | { kind: "error"; text: string; usage?: OpenAIUsage | null }
   | { kind: "ignore" };
 
@@ -2176,6 +2172,10 @@ function mapSdkEvent(event: unknown): MappedEvent {
 
   // stream_event / partial message deltas (authoritative while streaming)
   if (e.type === "stream_event" && e.event && typeof e.event === "object") {
+    // message_start / message_delta carry each API call's usage; the delta
+    // holds the final output_tokens the assistant event does not have yet.
+    const streamUsage = usageFromStreamEvent(event);
+    if (streamUsage) return { kind: "usage-stream", usage: streamUsage };
     const ev = e.event as Record<string, unknown>;
     if (ev.type === "content_block_delta" && ev.delta && typeof ev.delta === "object") {
       const delta = ev.delta as Record<string, unknown>;

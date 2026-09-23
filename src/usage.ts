@@ -173,7 +173,9 @@ export function usageFromSdkTurnResult(event: unknown): OpenAIUsage | null {
  * Extract per-API-call usage from an Agent SDK `assistant` event
  * (`message.usage`). Each assistant event carries the usage of exactly one
  * Anthropic API call — including parked (tool-call) turns, where no `result`
- * event exists yet because the query is still alive.
+ * event exists yet because the query is still alive. The CLI emits it with
+ * the `message_start` snapshot, so `output_tokens` is provisional until the
+ * call's `message_delta` (see {@link TurnUsage}).
  */
 export function usageFromAssistantEvent(event: unknown): OpenAIUsage | null {
   if (!event || typeof event !== "object") return null;
@@ -234,6 +236,139 @@ export function addUniqueAssistantUsageState(
     aggregate: addOpenAIUsage(state.aggregate, delta),
     latest: delta,
   };
+}
+
+type AnthropicUsage = Record<string, unknown>;
+
+/** Usage carried by a partial-message `stream_event` (message_start/_delta). */
+export type StreamUsageEvent =
+  | {
+      readonly phase: "start";
+      /** Stream the message belongs to (`parent_tool_use_id`; "" = main). */
+      readonly scope: string;
+      readonly messageId: string | null;
+      readonly usage: AnthropicUsage;
+    }
+  | {
+      readonly phase: "delta";
+      readonly scope: string;
+      readonly usage: AnthropicUsage;
+    };
+
+/**
+ * Extract usage from an Agent SDK `stream_event`. `message_start` opens an
+ * API call with its initial usage; `message_delta` carries that call's final
+ * cumulative counts (the only place the real `output_tokens` appear before
+ * the terminal `result`).
+ */
+export function usageFromStreamEvent(event: unknown): StreamUsageEvent | null {
+  if (!event || typeof event !== "object") return null;
+  const e = event as Record<string, unknown>;
+  if (e.type !== "stream_event" || !e.event || typeof e.event !== "object") {
+    return null;
+  }
+  const ev = e.event as Record<string, unknown>;
+  const scope =
+    typeof e.parent_tool_use_id === "string" ? e.parent_tool_use_id : "";
+  if (ev.type === "message_start") {
+    const message =
+      ev.message && typeof ev.message === "object"
+        ? (ev.message as Record<string, unknown>)
+        : null;
+    if (!message?.usage || typeof message.usage !== "object") return null;
+    return {
+      phase: "start",
+      scope,
+      messageId: typeof message.id === "string" ? message.id : null,
+      usage: message.usage as AnthropicUsage,
+    };
+  }
+  if (ev.type === "message_delta" && ev.usage && typeof ev.usage === "object") {
+    return { phase: "delta", scope, usage: ev.usage as AnthropicUsage };
+  }
+  return null;
+}
+
+/**
+ * Per-response usage accounting. Assistant events and `message_start` give
+ * each API call's usage with provisional `output_tokens`; the call's
+ * `message_delta` (which follows its `message_start` in the same scope)
+ * replaces them with the final cumulative counts. `seen` is shared across a
+ * bridge's continuations so a call is counted in exactly one response.
+ */
+export class TurnUsage {
+  #state: AssistantUsageState = { aggregate: null, latest: null };
+  #result: OpenAIUsage | null = null;
+  /** This response's calls, in first-seen order (id null = unidentified). */
+  readonly #calls: Array<{ id: string | null; usage: OpenAIUsage }> = [];
+  /** Open message per stream scope, awaiting its message_delta. */
+  readonly #open = new Map<
+    string,
+    { id: string | null; usage: AnthropicUsage }
+  >();
+
+  readonly #seen: Set<string>;
+
+  constructor(seen: Set<string>) {
+    this.#seen = seen;
+  }
+
+  /** Usage from an `assistant` event (provisional output_tokens). */
+  assistant(usage: OpenAIUsage, messageId: string | null): void {
+    const next = addUniqueAssistantUsageState(
+      this.#state,
+      usage,
+      messageId,
+      this.#seen,
+    );
+    if (next === this.#state) return;
+    this.#state = next;
+    this.#calls.push({ id: messageId, usage });
+  }
+
+  stream(event: StreamUsageEvent): void {
+    if (event.phase === "start") {
+      this.#open.set(event.scope, { id: event.messageId, usage: event.usage });
+      return;
+    }
+    const open = this.#open.get(event.scope);
+    if (!open) return;
+    this.#open.delete(event.scope);
+    // message_delta counts are cumulative; null fields keep the start value.
+    const merged: AnthropicUsage = { ...open.usage };
+    for (const [key, value] of Object.entries(event.usage)) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        merged[key] = value;
+      }
+    }
+    const final = fromAnthropicUsage(merged);
+    const index =
+      open.id === null ? -1 : this.#calls.findIndex((c) => c.id === open.id);
+    if (index === -1) {
+      // No assistant event for this call yet: count it now. A call already
+      // reported by an earlier response of this bridge stays there.
+      this.assistant(final, open.id);
+      return;
+    }
+    this.#calls[index] = { id: open.id, usage: final };
+    let aggregate: OpenAIUsage | null = null;
+    for (const call of this.#calls) {
+      aggregate = addOpenAIUsage(aggregate, call.usage);
+    }
+    this.#state = {
+      aggregate,
+      latest: this.#calls[this.#calls.length - 1]!.usage,
+    };
+  }
+
+  /** Usage from the terminal `result` event (fallback / metadata donor). */
+  result(usage: OpenAIUsage): void {
+    this.#result = usage;
+  }
+
+  resolve(): OpenAIUsage | null {
+    return resolveOpenCodeUsage(this.#state, this.#result);
+  }
 }
 
 /**
