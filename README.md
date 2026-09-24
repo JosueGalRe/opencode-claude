@@ -160,7 +160,7 @@ bun run test        # offline: smoke.ts + every test/*-regression.ts, each in it
 bun run test:haiku  # live checks against a signed-in CLI (Haiku)
 ```
 
-- **Hot reload on V2.** V2 watches the plugin's files, so a rebuild is enough; you don't need to restart `opencode serve`. A reload stops the proxy, which cuts off any turn in flight, including one waiting on a tool call. When that tool result arrives, the turn is rebuilt from history. Build between turns.
+- **Hot reload on V2.** V2 watches the plugin's files, so a rebuild is enough; you don't need to restart `opencode serve`. A reload stops the proxy, which cuts off any turn in flight, including one waiting on a tool call. When that tool result arrives, the turn is rebuilt from history. Saving `package.json` reloads it too, and so does `bun run test`, whose `smoke.ts` ends with a build. Build, test and edit `package.json` between turns.
 - **CI.** `.github/workflows/ci.yml` builds and runs the tests on pushes to `main` and on pull requests. `release.yml` is manual: it bumps the version, tests and builds, tags the release commit on `main`, publishes `@josuegalre/opencode-claude` to npm (needs an `NPM_TOKEN` secret) and creates the GitHub release.
 
 ## Credits
