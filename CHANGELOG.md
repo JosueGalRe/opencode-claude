@@ -100,7 +100,9 @@
   summary"; V2's summary prompt wasn't recognized either. The V2 plugin now
   forwards the request kind (`x-opencode-claude-request-kind`): compaction and
   title requests take the single-turn meta path and close any parked turn,
-  whatever their wording.
+  whatever their wording. V2 summary requests also stop forwarding the
+  agent's system prompt (V2 puts the instructions in the user turn), whose
+  "# Your Model"/`<env>` sections got them rejected as third-party usage.
 
 ### Internal
 

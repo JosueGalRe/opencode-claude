@@ -133,7 +133,11 @@ export function claudeCodePreset(
 ): ClaudeCodePreset {
   const preset: ClaudeCodePreset = { type: "preset", preset: "claude_code" };
   if (metaKind) {
-    preset.append = metaPresetAppend(metaKind, messages);
+    // V2 sends its summary instructions in the user turn; its system prompt is
+    // the agent's own, whose "# Your Model"/<env> sections get the request
+    // rejected as third-party usage.
+    const system = metaSystemPrompt(messages);
+    preset.append = metaPresetAppend(metaKind, V2_MODEL_MARKER.test(system) ? "" : system);
     return preset;
   }
   const context = systemContextForwardingEnabled()

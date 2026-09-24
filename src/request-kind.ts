@@ -113,13 +113,13 @@ export function requestKeyNamespace(kind: MetaRequestKind): string {
  */
 export function metaPresetAppend(
   kind: "title" | "summary",
-  messages: MessageLike[],
+  system: string,
 ): string {
   if (kind === "title") {
     return "You generate short session titles. Follow the requested output format exactly.";
   }
   return [
-    metaSystemPrompt(messages),
+    system,
     "This is a single-turn text transformation. Return only the requested summary. Do not inspect files, execute commands, or use tools.",
   ]
     .filter(Boolean)

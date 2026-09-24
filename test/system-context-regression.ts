@@ -23,7 +23,9 @@ const INSTRUCTIONS = "Instructions from: /repo/AGENTS.md\n# Rules\n- Run tests s
 const SKILLS = "<available_skills>\n  <skill><name>pdf</name></skill>\n</available_skills>";
 
 async function main() {
-  const { openCodeSystemContext } = await import("../src/system-context.ts");
+  const { claudeCodePreset, openCodeSystemContext } = await import(
+    "../src/system-context.ts"
+  );
 
   // Stock agent: base prompt + env dropped, user config kept.
   const stock = openCodeSystemContext([
@@ -107,6 +109,27 @@ async function main() {
   assert.equal(v2Unparsed, "");
 
   assert.equal(openCodeSystemContext([{ role: "user", content: "hi" }]), "");
+
+  // V2 compaction carries its instructions in the user turn: the agent's
+  // system prompt, third-party fingerprint included, stays out. V1 summary
+  // agents carry theirs in the system prompt, which is kept.
+  const v2Summary = claudeCodePreset(
+    "summary",
+    [
+      { role: "system", content: `You are a pirate tester.\n${v2Env}\n${INSTRUCTIONS}` },
+      { role: "user", content: "Summarize the conversation above." },
+    ],
+    null,
+  ).append ?? "";
+  assert.ok(!v2Summary.includes("Your Model"), "v2 compaction drops the system prompt");
+  assert.ok(!v2Summary.includes("pirate tester"));
+  assert.match(v2Summary, /single-turn text transformation/);
+  const v1Summary = claudeCodePreset(
+    "summary",
+    [{ role: "system", content: "You are a helpful AI assistant tasked with summarizing conversations." }],
+    null,
+  ).append ?? "";
+  assert.match(v1Summary, /tasked with summarizing conversations/);
 
   // Through the proxy: appended to the preset, and switchable off.
   const tmp = mkdtempSync(join(tmpdir(), "opencode-claude-sysctx-"));
