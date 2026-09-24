@@ -94,6 +94,13 @@
   abandoned conversations leaked processes. Parks now close after
   `OPENCODE_CLAUDE_PARKED_TURN_TTL_MS` (default 1 h, `0` disables); late
   results rebuild the turn with the history transferred.
+- **V2 compaction mid-turn** — a compaction (manual or automatic) sent while
+  a turn was parked on a tool call was matched to that park and answered with
+  its re-emitted tool call, so V2 failed with "Compaction produced no
+  summary"; V2's summary prompt wasn't recognized either. The V2 plugin now
+  forwards the request kind (`x-opencode-claude-request-kind`): compaction and
+  title requests take the single-turn meta path and close any parked turn,
+  whatever their wording.
 
 ### Internal
 

@@ -1,7 +1,7 @@
 /**
  * Regression: the V2 setup registers the claude-code provider against the
  * live proxy (catalog, limits, effort variants), the Claude CLI sign-in
- * integration, and per-request session/effort/directory headers.
+ * integration, and per-request session/effort/directory/request-kind headers.
  *
  * Run: bun test/plugin-v2-regression.ts
  */
@@ -20,6 +20,7 @@ async function main() {
     EFFORT_HEADER,
     PROVIDER_ID,
     PROXY_TOKEN_HEADER,
+    REQUEST_KIND_HEADER,
     SESSION_HEADER,
   } = await import("../src/constants.ts");
   const { decodeClaudeModelSelection } = await import(
@@ -116,6 +117,7 @@ async function main() {
     const event = {
       sessionID: "sess-v2",
       model: { providerID: PROVIDER_ID, id: "sonnet", variant: "high" },
+      kind: "compaction",
       headers: {} as Record<string, string>,
     };
     onModelRequest!(event);
@@ -126,6 +128,7 @@ async function main() {
     assert.equal(event.headers[SESSION_HEADER], "sess-v2");
     assert.equal(event.headers[DIRECTORY_HEADER], "/work/project");
     assert.equal(event.headers[PROXY_TOKEN_HEADER], token);
+    assert.equal(event.headers[REQUEST_KIND_HEADER], "compaction");
 
     // The token is what the live proxy demands: a V2 request shaped like the
     // host's (marker bearer + hook headers) is admitted, one without the

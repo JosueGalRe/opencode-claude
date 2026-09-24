@@ -2,6 +2,8 @@
  * Regression: Claude session reuse across turns.
  * - a second compaction still transfers the conversation (meta requests
  *   neither resume nor bind sessions);
+ * - a V2 compaction (request-kind header) that lands mid-turn closes the
+ *   parked turn and runs single-shot, whatever its wording;
  * - an OpenCode system-prompt change does not drop the session;
  * - sessions.json is written once per turn, not once per stream event;
  * - turns answered by another provider force a rebuild, while normal turns,
@@ -44,7 +46,7 @@ type Completion = {
     };
   }>;
 };
-type Call = { resume?: string; prompt: string };
+type Call = { resume?: string; prompt: string; maxTurns?: number };
 type Script = (
   params: StartClaudeQueryParams,
   closed: Promise<void>,
@@ -115,7 +117,11 @@ async function main() {
   let script: Script = textTurn;
   let closeCount = 0;
   setClaudeQueryStarter(async (params) => {
-    calls.push({ resume: params.resume, prompt: await promptText(params.prompt) });
+    calls.push({
+      resume: params.resume,
+      prompt: await promptText(params.prompt),
+      maxTurns: params.maxTurns,
+    });
     const closed = Promise.withResolvers<void>();
     const handle: ClaudeQueryHandle = {
       stream: script(params, closed.promise),
@@ -132,6 +138,7 @@ async function main() {
     messages: unknown[],
     extra: Record<string, unknown> = {},
     signal?: AbortSignal,
+    headers: Record<string, string> = {},
   ) =>
     fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: "POST",
@@ -139,6 +146,7 @@ async function main() {
         "content-type": "application/json",
         authorization: `Bearer ${getProxyAuthToken()}`,
         "x-opencode-claude-session": session,
+        ...headers,
       },
       body: JSON.stringify({ model: "sonnet", stream: false, messages, ...extra }),
       signal,
@@ -201,6 +209,33 @@ async function main() {
       !Object.keys(stored).some((key) => key.startsWith("summary:")),
       "meta requests bind no Claude session",
     );
+
+    // --- A V2 compaction mid-turn is a summary whatever its wording: the
+    // parked turn is closed, not answered with its re-emitted tool call. ---
+    let parkedClosed = false;
+    script = async function* (params, closed) {
+      void closed.then(() => (parkedClosed = true));
+      yield* toolTurn([{ name: "bash", args: { path: "x" } }], [])(params, closed);
+    };
+    const parked = await turn("v2-compact", [user("run it")], { tools: [tool("bash")] });
+    const parkedCall = parked.choices[0].message.tool_calls[0];
+    script = textTurn;
+    const compactRes = await post(
+      "v2-compact",
+      [
+        user("run it"),
+        toolCall(parkedCall.id, "bash", parkedCall.function.arguments),
+        user("You MUST summarize the conversation above."),
+      ],
+      {},
+      undefined,
+      { "x-opencode-claude-request-kind": "compaction" },
+    );
+    assert.equal(compactRes.status, 200, await compactRes.clone().text());
+    const compacted = (await compactRes.json()) as Completion;
+    assert.equal(compacted.choices[0].message.content, "ok", "summary, not the parked tool call");
+    assert.equal(calls.at(-1)!.maxTurns, 1, "single-shot meta request");
+    assert.ok(parkedClosed, "parked turn closed");
 
     // --- System prompt changes (model/agent/date) keep the session. ---
     await turn("sys", [{ role: "system", content: "Model: sonnet" }, user("one")]);

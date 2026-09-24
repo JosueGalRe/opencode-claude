@@ -57,6 +57,7 @@ import { TurnRunner } from "./turn-runner.js";
 import {
   DIRECTORY_HEADER,
   PROXY_TOKEN_HEADER,
+  REQUEST_KIND_HEADER,
   SESSION_HEADER,
   type ClaudeEffort,
 } from "./constants.js";
@@ -885,7 +886,14 @@ async function handleChatCompletions(
   body: ChatCompletionRequest,
 ): Promise<Response> {
   const messages = Array.isArray(body.messages) ? body.messages : [];
-  const metaKind = detectMetaRequestKind(messages);
+  // V2 names the request kind; V1 leaves only the prompt wording to go by.
+  const requestKind = req.headers.get(REQUEST_KIND_HEADER);
+  const metaKind =
+    requestKind === "compaction"
+      ? "summary"
+      : requestKind === "title"
+        ? "title"
+        : detectMetaRequestKind(messages);
   const isMetaRequest = metaKind !== null;
   const sessionHeader = req.headers.get(SESSION_HEADER);
   const baseConversationKey =

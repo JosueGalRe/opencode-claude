@@ -8,6 +8,8 @@ export const SESSION_HEADER = "x-opencode-claude-session";
 export const DIRECTORY_HEADER = "x-opencode-claude-directory";
 /** Per-process secret the plugin sends so only it can drive the local proxy. */
 export const PROXY_TOKEN_HEADER = "x-opencode-claude-token";
+/** Why V2 makes the request: primary, compaction, title or generate. */
+export const REQUEST_KIND_HEADER = "x-opencode-claude-request-kind";
 
 export const EFFORT_LEVELS = [
   "low",

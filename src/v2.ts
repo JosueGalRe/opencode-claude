@@ -17,6 +17,7 @@ import {
   EFFORT_LEVELS,
   PROVIDER_ID,
   PROXY_TOKEN_HEADER,
+  REQUEST_KIND_HEADER,
   SESSION_HEADER,
 } from "./constants.js";
 import { detectClaudeCode } from "./detect.js";
@@ -167,6 +168,7 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
       event.headers[PROXY_TOKEN_HEADER] = getProxyAuthToken();
       event.headers[SESSION_HEADER] = event.sessionID;
       event.headers[DIRECTORY_HEADER] = ctx.location.directory;
+      event.headers[REQUEST_KIND_HEADER] = event.kind;
     });
   } catch (error) {
     await stopProxy();
