@@ -10,7 +10,7 @@
 #   ./scripts/update-plugin.sh --dry-run        # only check, don't apply/restart
 #
 # The script:
-#   1. Checks the latest `@openchamber/opencode-claude` version on npm.
+#   1. Checks the latest `@josuegalre/opencode-claude` version on npm.
 #   2. Git-fetches and rebases onto origin/main (auto-stashes local changes if any).
 #   3. Compares the plugin pin in `.opencode/opencode.json` with the npm latest.
 #   4. If the pin is stale, updates it, commits the change, and restarts opencode.
@@ -20,7 +20,7 @@
 set -euo pipefail
 
 # ── Config ──────────────────────────────────────────────────────────────────
-PLUGIN_NAME="@openchamber/opencode-claude"
+PLUGIN_NAME="@josuegalre/opencode-claude"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 OPENCODE_BIN="${OPENCODE_BIN:-$(command -v opencode 2>/dev/null || echo "$HOME/.opencode/bin/opencode")}"
 

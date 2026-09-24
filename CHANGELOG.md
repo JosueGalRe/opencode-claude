@@ -22,6 +22,10 @@
   `failed to load plugin … ENOENT` until the new bundle was written, and a
   failed build would have left V2 without the plugin. The bundle is now
   overwritten in place.
+- **Package renamed to `@josuegalre/opencode-claude`** — the fork's own npm
+  name; `repository`, `homepage` and `bugs` point at
+  `JosueGalRe/opencode-claude`, and `scripts/update-plugin.sh` checks the new
+  name. `@openchamber/opencode-claude` on npm stays upstream's package.
 
 ### Security
 
