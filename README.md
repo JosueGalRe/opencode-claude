@@ -48,6 +48,15 @@ One entrypoint serves both APIs: V2 reads the `Plugin.define` definition (`serve
 }
 ```
 
+**OpenCode V2, single file.** `dist/index.js` bundles its npm dependencies, so it also loads on its own from V2's plugin folder, without the checkout or `node_modules`:
+
+```bash
+mkdir -p ~/.config/opencode/plugins
+cp dist/index.js ~/.config/opencode/plugins/opencode-claude.js
+```
+
+Copy it again after each build; the copy doesn't follow the checkout. Not tested on V1.
+
 **OpenCode V1.** Add it to `plugin`, together with a `claude-code` provider entry. Running `opencode plugin file://$PWD` from the checkout writes the `plugin` entry for you.
 
 ```jsonc
@@ -155,7 +164,7 @@ During a confirmed subscription limit, new turns get 429 with `Retry-After` and 
 
 ```bash
 bun install
-bun run build       # .d.ts files via tsc, then a single bundled dist/index.js via bun build
+bun run build       # .d.ts files via tsc, then dist/index.js with its npm dependencies via bun build
 bun run test        # offline: smoke.ts + every test/*-regression.ts, each in its own process
 bun run test:haiku  # live checks against a signed-in CLI (Haiku)
 ```

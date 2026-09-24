@@ -11,12 +11,16 @@
   synchronous `search({ query })`; `fetch` works, imports/fs/timers don't.
   Verified live: Claude discovers the runtime catalog via `search` and
   composes calls through the bridge.
+- **Single-file install on V2** — `dist/index.js` bundles its npm
+  dependencies, so copied alone into `~/.config/opencode/plugins/` it loads
+  without the checkout or `node_modules` (verified on V2 2.0.15, down to a
+  live turn; V1 untested).
 
 ### Changed
 
-- **`dist/` is a single bundled `index.js`** — `bun build` replaces tsc's
-  per-module output; npm dependencies stay external, and `tsc` still
-  typechecks and emits the `.d.ts` files `types` points at.
+- **`dist/` is a single self-contained `index.js`** — `bun build` replaces
+  tsc's per-module output and inlines the npm dependencies (~3 MB); `tsc`
+  still typechecks and emits the `.d.ts` files `types` points at.
 - **`bun run build` no longer deletes `dist/` first** — V2 reloads the
   plugin as soon as `dist/index.js` disappears, so each build logged
   `failed to load plugin … ENOENT` until the new bundle was written, and a
