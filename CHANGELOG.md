@@ -20,7 +20,8 @@
 
 - **`dist/` is a single self-contained `index.js`** — `bun build` replaces
   tsc's per-module output and inlines the npm dependencies (~3 MB); `tsc`
-  still typechecks and emits the `.d.ts` files `types` points at.
+  only typechecks (`--noEmit`), so the package ships no `.d.ts` files and
+  no longer declares `types`.
 - **`bun run build` no longer deletes `dist/` first** — V2 reloads the
   plugin as soon as `dist/index.js` disappears, so each build logged
   `failed to load plugin … ENOENT` until the new bundle was written, and a

@@ -164,7 +164,7 @@ During a confirmed subscription limit, new turns get 429 with `Retry-After` and 
 
 ```bash
 bun install
-bun run build       # .d.ts files via tsc, then dist/index.js with its npm dependencies via bun build
+bun run build       # typecheck via tsc, then dist/index.js with its npm dependencies via bun build
 bun run test        # offline: smoke.ts + every test/*-regression.ts, each in its own process
 bun run test:haiku  # live checks against a signed-in CLI (Haiku)
 ```
