@@ -5,3 +5,4 @@ dist/
 
 # Local agent notes / environment-specific
 AGENTS.md
+.omo/
