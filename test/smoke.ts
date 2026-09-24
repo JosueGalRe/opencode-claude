@@ -1714,6 +1714,38 @@ async function main() {
         "server_error",
       );
 
+      // Anthropic refusal reported as a synthetic assistant message whose
+      // error isn't rate_limit (the third-party 400) → its 4xx before any
+      // stream, not a fake-200 carrying "[claude-code error]" as the answer.
+      const refusedText =
+        "API Error: 400 Third-party apps now draw from your extra usage, not your plan limits. Add more at claude.ai/settings/usage and keep going.";
+      setClaudeQueryStarter(async () => ({
+        stream: (async function* () {
+          yield { type: "system", subtype: "init", session_id: "ff-refused" };
+          yield {
+            type: "assistant",
+            error: "unknown",
+            message: {
+              role: "assistant",
+              content: [{ type: "text", text: refusedText }],
+              usage: { input_tokens: 0, output_tokens: 0 },
+            },
+          };
+          yield { type: "result", is_error: true, result: refusedText };
+          throw new Error(`Claude Code returned an error result: ${refusedText}`);
+        })(),
+        close: () => {},
+      }));
+      for (const stream of [true, false]) {
+        const refusedRes = await postTurn(`ff-refused-${stream}`, stream);
+        assert.equal(refusedRes.status, 400, `stream=${stream}`);
+        const refusedJson = (await refusedRes.json()) as {
+          error?: { type?: string; message?: string };
+        };
+        assert.equal(refusedJson.error?.type, "invalid_request_error");
+        assert.match(refusedJson.error?.message ?? "", /Third-party apps/);
+      }
+
       // Error AFTER content → still a 200 stream with the inline note once
       setClaudeQueryStarter(async () => ({
         stream: (async function* () {

@@ -1364,16 +1364,21 @@ function failureResponse(
     return rateLimitResponse(message, retryAfterSeconds, snap.resetsAt);
   }
 
+  // Anthropic refused the request itself (e.g. 400 "Third-party apps…"):
+  // keep its 4xx; a retry sends the same request and fails the same way.
+  const apiStatus = Number(/\bAPI Error: (4\d\d)\b/.exec(errorText)?.[1]);
+  const refused =
+    kind === "unknown" && apiStatus !== 429 ? apiStatus || null : null;
   const hint = failureHintFor(kind);
   return Response.json(
     {
       error: {
         message: hint ? `${errorText} ${hint}` : errorText,
-        type: failureTypeFor(kind),
+        type: refused ? "invalid_request_error" : failureTypeFor(kind),
         code: kind === "auth" ? "claude_auth" : "claude_turn_failed",
       },
     },
-    { status: failureStatusFor(kind) },
+    { status: refused ?? failureStatusFor(kind) },
   );
 }
 
@@ -1627,7 +1632,11 @@ type MappedEvent =
 
 /** Text carried by Claude's synthetic assistant API-error message. */
 function assistantErrorText(event: Record<string, unknown>): string | null {
-  if (event.error !== "rate_limit") return null;
+  // Every SDKAssistantMessageError is a failed API call except
+  // `max_output_tokens`, which follows a truncated answer.
+  if (typeof event.error !== "string" || event.error === "max_output_tokens") {
+    return null;
+  }
   const message = event.message;
   if (!message || typeof message !== "object") return null;
   const content = (message as { content?: unknown }).content;
@@ -1643,7 +1652,10 @@ function assistantErrorText(event: Record<string, unknown>): string | null {
     .map((block) => block.text)
     .join("\n")
     .trim();
-  return text || "Claude session/usage limit reached";
+  if (text) return text;
+  return event.error === "rate_limit"
+    ? "Claude session/usage limit reached"
+    : `Claude API request failed (${event.error})`;
 }
 
 /** claude CLI text when `resume` points at a session it cannot load. */

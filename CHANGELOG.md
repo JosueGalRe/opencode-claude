@@ -103,6 +103,13 @@
   whatever their wording. V2 summary requests also stop forwarding the
   agent's system prompt (V2 puts the instructions in the user turn), whose
   "# Your Model"/`<env>` sections got them rejected as third-party usage.
+- **API refusals before any output are real HTTP errors** — the CLI reports a
+  refused API call as a synthetic assistant message, but only `rate_limit`
+  ones were recognized; any other (e.g. `error: "unknown"` for 400
+  "Third-party apps now draw from your extra usage") opened a 200 stream whose
+  only text was `[claude-code error] …`, which V2 compaction reported as a
+  summary that "did not match the required template". They now fail before
+  the stream starts, and Anthropic's 4xx is kept instead of a retryable 500.
 
 ### Internal
 
