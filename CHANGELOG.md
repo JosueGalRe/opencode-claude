@@ -17,6 +17,11 @@
 - **`dist/` is a single bundled `index.js`** — `bun build` replaces tsc's
   per-module output; npm dependencies stay external, and `tsc` still
   typechecks and emits the `.d.ts` files `types` points at.
+- **`bun run build` no longer deletes `dist/` first** — V2 reloads the
+  plugin as soon as `dist/index.js` disappears, so each build logged
+  `failed to load plugin … ENOENT` until the new bundle was written, and a
+  failed build would have left V2 without the plugin. The bundle is now
+  overwritten in place.
 
 ### Security
 
