@@ -21,7 +21,7 @@
   ],
   "scripts": {
     "prebuild": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json --emitDeclarationOnly && bun build src/index.ts --outfile dist/index.js --target bun --packages external",
     "test": "bun test/run.ts",
     "test:haiku": "bun test/haiku-live.ts",
     "prepublishOnly": "npm run build"

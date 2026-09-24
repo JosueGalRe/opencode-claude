@@ -12,6 +12,12 @@
   Verified live: Claude discovers the runtime catalog via `search` and
   composes calls through the bridge.
 
+### Changed
+
+- **`dist/` is a single bundled `index.js`** — `bun build` replaces tsc's
+  per-module output; npm dependencies stay external, and `tsc` still
+  typechecks and emits the `.d.ts` files `types` points at.
+
 ### Security
 
 - **Proxy requires a secret** — `POST /v1/chat/completions` now needs a
