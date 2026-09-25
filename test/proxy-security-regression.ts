@@ -1,8 +1,9 @@
 /**
  * Regression: the local proxy is reachable by every local process and by
  * browser pages, so POST /v1/chat/completions must require the plugin's
- * token, refuse browser origins, never run Claude Code's native tools with
- * auto-approval, map errors to truthful statuses, close parked CLI turns on
+ * token, refuse browser origins and non-plan CLI logins, never run Claude
+ * Code's native tools with auto-approval, map errors to truthful statuses,
+ * close parked CLI turns on
  * shutdown, and take over a pinned port when the sibling serving it exits.
  *
  * Run: bun test/proxy-security-regression.ts
@@ -58,6 +59,7 @@ async function main() {
     getProxyAuthToken,
     getProxyPort,
   } = await import("../src/proxy.ts");
+  const { setAuthStatusProbe } = await import("../src/detect.ts");
   const { PROXY_TOKEN_HEADER } = await import("../src/constants.ts");
   const url = `http://127.0.0.1:${port}/v1/chat/completions`;
 
@@ -166,6 +168,19 @@ async function main() {
       ((await malformed.json()) as { error: { type: string } }).error.type,
       "invalid_request_error",
     );
+
+    // A CLI signed in with an API key or a cloud provider is refused before
+    // any turn starts: this provider serves Claude plans only.
+    calls = 0;
+    setAuthStatusProbe(async () => ({ detail: "api-key-only" }));
+    const apiKeyLogin = await post(auth);
+    assert.equal(apiKeyLogin.status, 401);
+    assert.match(
+      ((await apiKeyLogin.json()) as { error: { message: string } }).error.message,
+      /API key/,
+    );
+    assert.equal(calls, 0);
+    setAuthStatusProbe(null);
 
     // Errors carrying a statusCode keep it (e.g. CLAUDE_SDK_UNAVAILABLE).
     setClaudeQueryStarter(async () => {

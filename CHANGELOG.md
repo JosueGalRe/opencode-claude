@@ -49,6 +49,12 @@
   along on every turn, outside OpenCode's permission rules. Queries now run
   with `strictMcpConfig` and `disableClaudeAiConnectors` (ported from
   upstream 1.0.0).
+- **Plan-only** — turns are refused with a 401 when the CLI is signed in
+  with an API key or set to Bedrock/Vertex/Foundry (`apiProvider` other than
+  `firstParty`), which would bill that account instead of the Claude plan.
+  `claude auth status` runs asynchronously, at most once a minute, and an
+  unknown status fails open (ported from upstream 1.0.0, whose check blocks
+  the server on `spawnSync`).
 - **Installer no longer pipes `curl` into `bash`** — the fallback install
   script is downloaded to a temp file, checked, then run; download failures
   and npm's error are reported instead of a false success.

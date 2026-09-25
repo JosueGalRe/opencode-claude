@@ -332,6 +332,11 @@ async function main() {
     interpretClaudeAuthStatus({ loggedIn: false, authMethod: "none" }).loggedIn,
     false,
   );
+  assert.equal(
+    interpretClaudeAuthStatus({ loggedIn: true, authMethod: "none", apiProvider: "bedrock" })
+      .detail,
+    "third-party-provider",
+  );
 
   // Every query sees only the MCP servers it is given (the OpenCode bridge).
   const { startClaudeQuery } = await import("../src/query.ts");

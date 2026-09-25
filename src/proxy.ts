@@ -73,6 +73,7 @@ import {
   setForeignSessionId,
   setHistoryFingerprint,
 } from "./session-store.js";
+import { subscriptionRefusal } from "./detect.js";
 import { log } from "./log.js";
 import {
   getRateLimitSnapshot,
@@ -963,6 +964,11 @@ async function handleChatCompletions(
     });
     return rateLimitResponse(gate.message, gate.retryAfterSeconds, gate.resetsAt);
   }
+
+  // Plan-only: a CLI on an API key or a cloud provider would bill that
+  // account instead, so the turn is refused before it starts.
+  const refusal = await subscriptionRefusal();
+  if (refusal) return errorResponse(401, "authentication_error", refusal);
 
   // Meta requests are single-shot transformations of the host array, and a
   // turn rebuilt around orphaned tool results cannot continue the session

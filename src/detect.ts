@@ -39,6 +39,13 @@ export function interpretClaudeAuthStatus(payload: unknown): {
     return { loggedIn: false, detail: "auth-status-logged-out", authMethod };
   }
 
+  // Bedrock / Vertex / Foundry / gateways bill outside the Claude plan.
+  const apiProvider =
+    typeof root.apiProvider === "string" ? root.apiProvider.trim() : "";
+  if (apiProvider && apiProvider !== "firstParty") {
+    return { loggedIn: false, detail: "third-party-provider", authMethod };
+  }
+
   if (
     normalized === "none" ||
     normalized.includes("api") ||
@@ -90,6 +97,46 @@ export async function probeClaudeAuthStatusCli(options: {
   }
 
   return interpretClaudeAuthStatus(payload);
+}
+
+type AuthStatusProbe = () => Promise<{ detail: string } | null>;
+
+const probeInstalledCli: AuthStatusProbe = async () => {
+  const binaryPath = await resolveClaudeCli();
+  return binaryPath ? probeClaudeAuthStatusCli({ binaryPath }) : null;
+};
+
+const AUTH_CHECK_TTL_MS = 60_000;
+let authStatusProbe = probeInstalledCli;
+let authCheck: { at: number; refusal: Promise<string | null> } | null = null;
+
+/** Test seam: replace the CLI probe (null restores it) and drop the cache. */
+export function setAuthStatusProbe(probe: AuthStatusProbe | null): void {
+  authStatusProbe = probe ?? probeInstalledCli;
+  authCheck = null;
+}
+
+/**
+ * Refusal message when the CLI is signed in some other way than a Claude
+ * plan (API key, Bedrock/Vertex/Foundry), else null. An unknown status fails
+ * open and a signed-out CLI fails on its own, so only a known non-plan login
+ * blocks. Cached so new turns don't each spawn `claude auth status`.
+ */
+export function subscriptionRefusal(now = Date.now()): Promise<string | null> {
+  if (authCheck && now - authCheck.at < AUTH_CHECK_TTL_MS) return authCheck.refusal;
+  const refusal = authStatusProbe()
+    .then((status) => {
+      if (status?.detail === "api-key-only") {
+        return "Claude Code CLI is signed in with an API key. This provider works only with a Claude plan: use OpenCode's Anthropic provider for API keys, or run `claude auth login --claudeai`.";
+      }
+      if (status?.detail === "third-party-provider") {
+        return "Claude Code CLI is set to use Bedrock, Vertex or another cloud provider. This provider works only with a Claude plan signed in via `claude auth login --claudeai`.";
+      }
+      return null;
+    })
+    .catch(() => null);
+  authCheck = { at: now, refusal };
+  return refusal;
 }
 
 export async function detectClaudeCode(options?: {
