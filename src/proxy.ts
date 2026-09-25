@@ -891,8 +891,8 @@ async function handleChatCompletions(
   const metaKind =
     requestKind === "compaction"
       ? "summary"
-      : requestKind === "title"
-        ? "title"
+      : requestKind === "title" || requestKind === "generate"
+        ? requestKind
         : detectMetaRequestKind(messages);
   const isMetaRequest = metaKind !== null;
   const sessionHeader = req.headers.get(SESSION_HEADER);
@@ -1055,6 +1055,9 @@ async function handleChatCompletions(
     mcpServers,
     autoCompactEnabled: !isMetaRequest,
     maxTurns: isMetaRequest ? 1 : undefined,
+    // Meta requests never resume; saving them would fill `claude --resume`
+    // with one-shot title/summary sessions.
+    persistSession: isMetaRequest ? false : undefined,
     thinking: isMetaRequest ? { type: "disabled" } : undefined,
     settingSources: isMetaRequest ? [] : undefined,
     skills: isMetaRequest ? [] : undefined,

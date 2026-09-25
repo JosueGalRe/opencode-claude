@@ -333,6 +333,24 @@ async function main() {
     false,
   );
 
+  // Every query sees only the MCP servers it is given (the OpenCode bridge).
+  const { startClaudeQuery } = await import("../src/query.ts");
+  let sdkOptions: Record<string, unknown> | undefined;
+  await startClaudeQuery({
+    prompt: "hi",
+    cwd: process.cwd(),
+    autoCompactEnabled: false,
+    queryImpl: () => (input: { options: Record<string, unknown> }) => {
+      sdkOptions = input.options;
+      return {};
+    },
+  });
+  assert.equal(sdkOptions!.strictMcpConfig, true);
+  assert.deepEqual(sdkOptions!.settings, {
+    disableClaudeAiConnectors: true,
+    autoCompactEnabled: false,
+  });
+
   // Models / effort
   const models = getClaudeModels();
   assert.ok(models.length >= 4);
@@ -956,6 +974,7 @@ async function main() {
       assert.deepEqual(titleOptions!.skills, []);
       assert.equal(titleOptions!.maxTurns, 1);
       assert.equal(titleOptions!.autoCompactEnabled, false);
+      assert.equal(titleOptions!.persistSession, false);
       assert.deepEqual(titleOptions!.thinking, { type: "disabled" });
       // effort "max" + thinking disabled is a 400 from the API — meta
       // requests must not forward the selected effort.

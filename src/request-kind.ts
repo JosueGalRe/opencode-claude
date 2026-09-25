@@ -4,7 +4,8 @@
  */
 import { extractTextContent } from "./prompt.js";
 
-export type MetaRequestKind = "title" | "summary" | null;
+/** `generate` comes only from V2's request-kind header, never from wording. */
+export type MetaRequestKind = "title" | "summary" | "generate" | null;
 
 type MessageLike = {
   role?: string;
@@ -102,6 +103,7 @@ export function detectMetaRequestKind(
 export function requestKeyNamespace(kind: MetaRequestKind): string {
   if (kind === "title") return "title:";
   if (kind === "summary") return "summary:";
+  if (kind === "generate") return "generate:";
   return "";
 }
 
@@ -112,7 +114,7 @@ export function requestKeyNamespace(kind: MetaRequestKind): string {
  * Code (anomalyco/opencode#7456).
  */
 export function metaPresetAppend(
-  kind: "title" | "summary",
+  kind: Exclude<MetaRequestKind, null>,
   system: string,
 ): string {
   if (kind === "title") {
@@ -120,7 +122,9 @@ export function metaPresetAppend(
   }
   return [
     system,
-    "This is a single-turn text transformation. Return only the requested summary. Do not inspect files, execute commands, or use tools.",
+    kind === "generate"
+      ? "This is a single-turn generation. Return only the requested output. Do not inspect files, execute commands, or use tools."
+      : "This is a single-turn text transformation. Return only the requested summary. Do not inspect files, execute commands, or use tools.",
   ]
     .filter(Boolean)
     .join("\n\n");

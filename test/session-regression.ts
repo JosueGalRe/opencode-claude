@@ -4,6 +4,7 @@
  *   neither resume nor bind sessions);
  * - a V2 compaction (request-kind header) that lands mid-turn closes the
  *   parked turn and runs single-shot, whatever its wording;
+ * - a V2 generate request runs single-shot and unsaved, even with a session;
  * - an OpenCode system-prompt change does not drop the session;
  * - sessions.json is written once per turn, not once per stream event;
  * - turns answered by another provider force a rebuild, while normal turns,
@@ -46,7 +47,7 @@ type Completion = {
     };
   }>;
 };
-type Call = { resume?: string; prompt: string; maxTurns?: number };
+type Call = { resume?: string; prompt: string; maxTurns?: number; persistSession?: boolean };
 type Script = (
   params: StartClaudeQueryParams,
   closed: Promise<void>,
@@ -121,6 +122,7 @@ async function main() {
       resume: params.resume,
       prompt: await promptText(params.prompt),
       maxTurns: params.maxTurns,
+      persistSession: params.persistSession,
     });
     const closed = Promise.withResolvers<void>();
     const handle: ClaudeQueryHandle = {
@@ -209,6 +211,17 @@ async function main() {
       !Object.keys(stored).some((key) => key.startsWith("summary:")),
       "meta requests bind no Claude session",
     );
+
+    // --- A V2 generate request runs single-shot and unsaved, even with the
+    // session header of a live chat. ---
+    await turn("gen", [user("one")]);
+    const genRes = await post("gen", [user("Write a commit message")], {}, undefined, {
+      "x-opencode-claude-request-kind": "generate",
+    });
+    assert.equal(genRes.status, 200, await genRes.clone().text());
+    assert.equal(calls.at(-1)!.resume, undefined, "generate does not resume the chat");
+    assert.equal(calls.at(-1)!.maxTurns, 1);
+    assert.equal(calls.at(-1)!.persistSession, false);
 
     // --- A V2 compaction mid-turn is a summary whatever its wording: the
     // parked turn is closed, not answered with its re-emitted tool call. ---

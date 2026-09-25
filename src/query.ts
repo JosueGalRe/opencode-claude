@@ -128,6 +128,8 @@ export type StartClaudeQueryParams = {
   autoCompactEnabled?: boolean;
   /** Stop utility queries such as title generation after one model turn. */
   maxTurns?: number;
+  /** `false` keeps one-shot utility turns out of `claude --resume` history. */
+  persistSession?: boolean;
   /** Thinking config; defaults to adaptive when effort is set. */
   thinking?:
     | { type: "adaptive" }
@@ -202,9 +204,16 @@ export async function startClaudeQuery(
     options.thinking = { type: "adaptive" };
   }
 
-  if (params.autoCompactEnabled === false) {
-    options.settings = { autoCompactEnabled: false };
-  }
+  // Only the servers passed in `mcpServers` (the OpenCode tool bridge): the
+  // user's Claude Code MCP servers and claude.ai connectors would add their
+  // tools to every turn, outside OpenCode's permission rules.
+  options.strictMcpConfig = true;
+  options.settings = {
+    disableClaudeAiConnectors: true,
+    ...(params.autoCompactEnabled === false ? { autoCompactEnabled: false } : {}),
+  };
+
+  if (params.persistSession === false) options.persistSession = false;
 
   if (Number.isInteger(params.maxTurns) && Number(params.maxTurns) > 0) {
     options.maxTurns = params.maxTurns;

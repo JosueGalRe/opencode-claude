@@ -44,12 +44,23 @@
   Claude Code's built-in Bash/Edit/Write with every call allowed, bypassing
   OpenCode permissions. Native tools are now always disabled; tool-less turns
   run tool-less, and a tool bridge that fails to build returns 503.
+- **Only OpenCode's tools reach Claude** — the user's Claude Code MCP
+  servers (`.mcp.json`, user settings, plugins) and claude.ai connectors rode
+  along on every turn, outside OpenCode's permission rules. Queries now run
+  with `strictMcpConfig` and `disableClaudeAiConnectors` (ported from
+  upstream 1.0.0).
 - **Installer no longer pipes `curl` into `bash`** — the fallback install
   script is downloaded to a temp file, checked, then run; download failures
   and npm's error are reported instead of a false success.
 
 ### Fixes
 
+- **Meta turns stay out of `claude --resume`** — title, summary and
+  generate turns run with `persistSession: false` (ported from upstream
+  1.0.0).
+- **V2 `generate` requests run one-shot** — a request with V2's `generate`
+  kind ran as a full agent turn that resumed the chat's Claude session; it
+  now runs single-shot, tool-less and unbound, like titles and summaries.
 - **OpenCode V2 third-party rejection (400 "Third-party apps now draw from
   your extra usage")**: V2's stock system prompt was forwarded into the
   Claude Code preset append, and its "# Your Model"/`Provider ID`/`<env>`
