@@ -45,7 +45,7 @@ import {
 } from "./model-selection.js";
 import { resolveClaudeModelId } from "./models.js";
 import { collectSteeringText, withSteering } from "./steering.js";
-import { claudeCodePreset } from "./system-context.js";
+import { turnSystemPrompt } from "./system-context.js";
 import {
   bridgedToolAliases,
   bridgedToolName,
@@ -1071,7 +1071,7 @@ async function handleChatCompletions(
     // checks are skipped; anything else is denied without prompting.
     permissionMode: bridged ? "bypassPermissions" : "dontAsk",
     allowDangerouslySkipPermissions: bridged,
-    systemPrompt: claudeCodePreset(metaKind, messages, bridged ? toolNames : null),
+    systemPrompt: turnSystemPrompt(metaKind, messages, bridged ? toolNames : null),
   });
   turn.attach(handle);
 

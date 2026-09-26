@@ -1,5 +1,5 @@
 import {
-  metaPresetAppend,
+  metaInstructions,
   metaSystemPrompt,
   type MetaRequestKind,
 } from "./request-kind.js";
@@ -121,25 +121,35 @@ export type ClaudeCodePreset = {
 };
 
 /**
- * System prompt of a turn: always the Claude Code preset, with the meta
- * instructions, the bridged-tool rules and the forwarded OpenCode context
- * appended as they apply. `bridgedToolNames` is null when the turn runs
- * without bridged tools.
+ * Meta turns need none of Claude Code's coding instructions. A non-preset
+ * system prompt is accepted on subscription credentials (checked on Haiku 4.5
+ * and Opus 5.5), and this one is 2-6k tokens smaller than the preset.
  */
-export function claudeCodePreset(
+const UTILITY_SYSTEM_PROMPT =
+  "You are a text generation helper running through the Claude Code harness. Return only the requested output.";
+
+/**
+ * System prompt of a turn. Meta turns: the one-line utility prompt with
+ * their instructions. Other turns: the Claude Code preset, with the
+ * bridged-tool rules and the forwarded OpenCode context appended as they
+ * apply. `bridgedToolNames` is null when the turn runs without bridged tools.
+ */
+export function turnSystemPrompt(
   metaKind: MetaRequestKind,
   messages: MessageLike[],
   bridgedToolNames: string[] | null,
-): ClaudeCodePreset {
-  const preset: ClaudeCodePreset = { type: "preset", preset: "claude_code" };
+): ClaudeCodePreset | string {
   if (metaKind) {
     // V2 sends its summary instructions in the user turn; its system prompt is
     // the agent's own, whose "# Your Model"/<env> sections get the request
     // rejected as third-party usage.
     const system = metaSystemPrompt(messages);
-    preset.append = metaPresetAppend(metaKind, V2_MODEL_MARKER.test(system) ? "" : system);
-    return preset;
+    return [
+      UTILITY_SYSTEM_PROMPT,
+      metaInstructions(metaKind, V2_MODEL_MARKER.test(system) ? "" : system),
+    ].join("\n\n");
   }
+  const preset: ClaudeCodePreset = { type: "preset", preset: "claude_code" };
   const context = systemContextForwardingEnabled()
     ? openCodeSystemContext(messages)
     : "";

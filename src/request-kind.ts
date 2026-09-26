@@ -108,12 +108,11 @@ export function requestKeyNamespace(kind: MetaRequestKind): string {
 }
 
 /**
- * Text appended to the Claude Code preset for a meta request. Meta turns keep
- * the preset so the request fingerprint matches normal turns: Anthropic
- * rejects subscription credentials on requests that don't look like Claude
- * Code (anomalyco/opencode#7456).
+ * Task instructions of a meta request, after its one-line system prompt.
+ * `system` is the host's system prompt when it carries the task (V1 summary
+ * agents), else "".
  */
-export function metaPresetAppend(
+export function metaInstructions(
   kind: Exclude<MetaRequestKind, null>,
   system: string,
 ): string {

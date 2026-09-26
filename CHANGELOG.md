@@ -31,6 +31,12 @@
   name; `repository`, `homepage` and `bugs` point at
   `JosueGalRe/opencode-claude`, and `scripts/update-plugin.sh` checks the new
   name. `@openchamber/opencode-claude` on npm stays upstream's package.
+- **Meta turns use a one-line system prompt** — titles, summaries and
+  generate ran on the full Claude Code preset, kept to match the fingerprint
+  Anthropic once required of subscription requests (anomalyco/opencode#7456).
+  A one-line prompt is accepted today (checked live on Haiku 4.5 and Opus
+  5.5) and cuts ~2-6k input tokens per meta turn (ported from upstream
+  1.1.0).
 
 ### Security
 
@@ -83,9 +89,6 @@
   tool Claude does not have); custom agent prompts, `Instructions from:`
   blocks and the skills list are still forwarded. Unrecognized V2 layouts
   forward nothing rather than risk the rejection.
-- **Meta requests keep the Claude Code preset** — title/summary turns used a
-  custom `systemPrompt` string that replaced the preset entirely; they now
-  append to it so the request fingerprint matches normal Claude Code turns.
 
 - **Rate-limit gate**: a transient 429 or unparseable limit message could
   reuse an unrelated window's reset (e.g. weekly) and block every turn for
