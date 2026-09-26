@@ -87,6 +87,7 @@ import {
 import {
   buildConversationTranscript,
   extractTextContent,
+  isPromotedToolMedia,
   latestUserPrompt,
   openaiContentToAnthropicBlocks,
   openaiToolResultToMcpContent,
@@ -535,14 +536,6 @@ async function handleRequest(req: Request): Promise<Response> {
   return new Response("Not Found", { status: 404 });
 }
 
-/** OpenCode's promoted tool-result media message; not a user turn. */
-function isPromotedToolMedia(msg: OpenAIMessage): boolean {
-  return (
-    msg.role === "user" &&
-    extractTextContent(msg.content).trim() === SYNTHETIC_TOOL_MEDIA_PROMPT
-  );
-}
-
 /**
  * The step OpenCode answers in this request: the last assistant message and
  * the tool results after it. Tool messages of earlier steps are history.
@@ -552,11 +545,11 @@ type AnsweredToolStep = {
   /** MCP result per tool_call_id, in message order. */
   results: Map<string, McpToolResultContent[]>;
   /**
-   * OpenCode promotes tool-result media into a synthetic user message
-   * ("Attached media from tool result:") after the step for providers that
-   * cannot carry media inside tool results — every openai-compatible
-   * provider. Only this step's message counts: OpenCode re-sends the ones of
-   * earlier steps on every request.
+   * OpenCode promotes tool-result media into a synthetic user message after
+   * the step (V1: labelled "Attached media from tool result:"; V2: the media
+   * alone) for providers that cannot carry media inside tool results — every
+   * openai-compatible provider. Only this step's message counts: OpenCode
+   * re-sends the ones of earlier steps on every request.
    */
   media: McpToolResultContent[];
 };
@@ -571,10 +564,11 @@ function collectAnsweredToolStep(
   if (assistantIndex < 0) return null;
   const results = new Map<string, McpToolResultContent[]>();
   const media: McpToolResultContent[] = [];
-  for (const msg of messages.slice(assistantIndex + 1)) {
+  const step = messages.slice(assistantIndex + 1);
+  for (const [i, msg] of step.entries()) {
     if (msg.role === "tool" && msg.tool_call_id) {
       results.set(msg.tool_call_id, openaiToolResultToMcpContent(msg.content));
-    } else if (isPromotedToolMedia(msg)) {
+    } else if (isPromotedToolMedia(msg, step[i - 1])) {
       media.push(
         ...openaiToolResultToMcpContent(msg.content).filter(
           (b) => !(b.type === "text" && b.text.trim() === SYNTHETIC_TOOL_MEDIA_PROMPT),
@@ -612,7 +606,8 @@ function answeredToolStepPrompt(
     (assistant.tool_calls ?? []).map((call) => [call.id, call.function]),
   );
   const userBlocks: AnthropicContentBlock[] = [];
-  for (const msg of messages.slice(step.assistantIndex + 1)) {
+  const stepMessages = messages.slice(step.assistantIndex + 1);
+  for (const [i, msg] of stepMessages.entries()) {
     if (msg.role === "tool" && msg.tool_call_id) {
       const call = calls.get(msg.tool_call_id);
       const blocks = openaiContentToAnthropicBlocks(msg.content);
@@ -623,7 +618,7 @@ function answeredToolStepPrompt(
         },
         ...(blocks.length > 0 ? blocks : [{ type: "text" as const, text: "(no output)" }]),
       );
-    } else if (isPromotedToolMedia(msg)) {
+    } else if (isPromotedToolMedia(msg, stepMessages[i - 1])) {
       content.push(
         { type: "text", text: "Media attached to these tool results:" },
         ...openaiContentToAnthropicBlocks(msg.content).filter(
@@ -661,11 +656,11 @@ function answeredToolStepPrompt(
 function answeredElsewhere(delta: OpenAIMessage[]): boolean {
   let sawAssistant = false;
   let unansweredUser = false;
-  for (const msg of delta) {
+  for (const [i, msg] of delta.entries()) {
     if (msg.role === "assistant") {
       if (unansweredUser) return true;
       sawAssistant = true;
-    } else if (msg.role === "user" && sawAssistant && !isPromotedToolMedia(msg)) {
+    } else if (msg.role === "user" && sawAssistant && !isPromotedToolMedia(msg, delta[i - 1])) {
       unansweredUser = true;
     }
   }

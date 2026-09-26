@@ -353,6 +353,24 @@ function convertPart(part: unknown, blocks: AnthropicContentBlock[]): void {
  */
 export const SYNTHETIC_TOOL_MEDIA_PROMPT = "Attached media from tool result:";
 
+/**
+ * OpenCode's promoted tool-result media message; not a user turn. V1 labels
+ * it with SYNTHETIC_TOOL_MEDIA_PROMPT; V2 sends the media alone, as a
+ * text-less user message right after the tool results. A real user message
+ * carries text or follows something other than a tool result.
+ */
+export function isPromotedToolMedia(
+  msg: { role?: string; content?: unknown },
+  previous: { role?: string } | undefined,
+): boolean {
+  if (msg.role !== "user") return false;
+  const text = extractTextContent(msg.content).trim();
+  return (
+    text === SYNTHETIC_TOOL_MEDIA_PROMPT ||
+    (!text && previous?.role === "tool" && contentHasAttachments(msg.content))
+  );
+}
+
 export function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -475,10 +493,7 @@ function latestUserTurn(
     if (msg?.role === "assistant") {
       if (turn.length > 0) break;
       toolStep = true;
-    } else if (
-      msg?.role === "user" &&
-      extractTextContent(msg.content).trim() !== SYNTHETIC_TOOL_MEDIA_PROMPT
-    ) {
+    } else if (msg?.role === "user" && !isPromotedToolMedia(msg, messages[i - 1])) {
       turn.unshift(i);
       if (toolStep) break;
     }

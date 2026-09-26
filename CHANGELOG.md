@@ -61,6 +61,12 @@
 
 ### Fixes
 
+- **Tool media on V2** — V2 sends the images and PDFs a tool returns as a
+  text-less user message right after the tool results, not V1's labelled
+  "Attached media from tool result:" one. Only the V1 form was recognized,
+  so a parked turn dropped the media (Claude never saw a screenshot or a
+  `read` PNG) and a rebuilt turn relayed it as a message from the user. The
+  V2 form is now tool media too (ported from upstream 1.1.1).
 - **Meta turns stay out of `claude --resume`** — title, summary and
   generate turns run with `persistSession: false` (ported from upstream
   1.0.0).

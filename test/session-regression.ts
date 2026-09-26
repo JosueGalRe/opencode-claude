@@ -361,6 +361,25 @@ async function main() {
       ["SU1HQg=="],
       "second read gets its own image, not the first step's",
     );
+
+    // --- V2 promotes tool media as a text-less user message: it rides the
+    // tool result like V1's labelled one. ---
+    const v2Received: McpBlock[][] = [];
+    script = toolTurn([{ name: "read", args: { path: "c.png" } }], v2Received);
+    const r1 = await turn("media-v2", [user("look")], readTool);
+    const v2Call = r1.choices[0].message.tool_calls[0];
+    const r2 = await turn(
+      "media-v2",
+      [
+        user("look"),
+        toolCall(v2Call.id, "read", v2Call.function.arguments),
+        toolResult(v2Call.id, "text C"),
+        user([{ type: "image_url", image_url: { url: "data:image/png;base64,SU1HQw==" } }]),
+      ],
+      readTool,
+    );
+    assert.match(r2.choices[0].message.content, /DONE/);
+    assert.deepEqual(images(v2Received[0]), ["SU1HQw=="]);
     script = textTurn;
     await turn("media", [...step2, assistant("DONE"), user("thanks")]);
     assert.equal(calls.at(-1)!.resume, SESSION_ID, "tool round trips keep resume");

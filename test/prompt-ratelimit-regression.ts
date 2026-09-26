@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildConversationTranscript,
+  isPromotedToolMedia,
   latestUserPrompt,
   openaiToolResultToMcpContent,
   SYNTHETIC_TOOL_MEDIA_PROMPT,
@@ -146,6 +147,26 @@ async function main() {
       ]),
       "REAL-ASK",
       "synthetic tool-media message is not a user turn",
+    );
+    // V2 promotes tool media as a text-less user message after the tool result.
+    const v2Media = {
+      role: "user",
+      content: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }],
+    };
+    assert.equal(
+      latestUserPrompt([
+        { role: "user", content: "REAL-ASK" },
+        { role: "assistant", content: "Reading the screenshot." },
+        { role: "tool", content: "done" },
+        v2Media,
+      ]),
+      "REAL-ASK",
+      "V2 tool-media message is not a user turn",
+    );
+    assert.equal(
+      isPromotedToolMedia(v2Media, { role: "assistant" }),
+      false,
+      "a text-less image the user sends outside a tool step is theirs",
     );
 
     // --- Transcript: oversized newest entry truncated, budget respected
