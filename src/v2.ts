@@ -29,10 +29,11 @@ import {
 } from "./model-selection.js";
 import { getClaudeModels } from "./models.js";
 import {
+  acquireProxy,
   getClaudeProxyBaseUrl,
   getProxyAuthToken,
+  releaseProxy,
   startProxy,
-  stopProxy,
 } from "./proxy.js";
 
 const AUTH_METHOD_ID = "claude-cli";
@@ -114,7 +115,7 @@ function toModelInfo(definition: {
 }
 
 export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
-  await startProxy();
+  await acquireProxy();
   try {
     await ctx.provider.transform((editor) => {
       editor.add({
@@ -160,8 +161,10 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
       });
     });
 
-    await ctx.session.hook("model.request", (event) => {
+    await ctx.session.hook("model.request", async (event) => {
       if (event.model.providerID !== PROVIDER_ID) return;
+      await startProxy();
+      event.baseURL = getClaudeProxyBaseUrl();
       event.headers[EFFORT_HEADER] = encodeClaudeModelSelection(
         resolveClaudeModelSelection(event.model.id, event.model.variant),
       );
@@ -171,11 +174,11 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
       event.headers[REQUEST_KIND_HEADER] = event.kind;
     });
   } catch (error) {
-    await stopProxy();
+    await releaseProxy();
     throw error;
   }
   return async () => {
-    await stopProxy();
+    await releaseProxy();
     log.info("[opencode-claude] V2 plugin unloaded");
   };
 };

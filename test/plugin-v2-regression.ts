@@ -38,7 +38,7 @@ async function main() {
 
   let added: { info: any; models: any[] } | null = null;
   let methodRegistration: any = null;
-  const hooks = new Map<string, (event: any) => void>();
+  const hooks = new Map<string, (event: any) => Promise<void>>();
 
   const ctx = {
     location: { directory: "/work/project" },
@@ -120,7 +120,8 @@ async function main() {
       kind: "compaction",
       headers: {} as Record<string, string>,
     };
-    onModelRequest!(event);
+    await onModelRequest!(event);
+    assert.equal(event.baseURL, getClaudeProxyBaseUrl());
     assert.deepEqual(decodeClaudeModelSelection(event.headers[EFFORT_HEADER]), {
       modelId: "sonnet",
       effort: "high",
@@ -162,8 +163,14 @@ async function main() {
       model: { providerID: "openai", id: "gpt-5" },
       headers: {} as Record<string, string>,
     };
-    onModelRequest!(foreign);
+    await onModelRequest!(foreign);
     assert.deepEqual(foreign.headers, {});
+    const otherCleanup = await plugin.setup(ctx as never);
+    await (cleanup as () => Promise<void>)();
+    assert.ok(getProxyPort(), "another location still holds the proxy");
+    await onModelRequest!(event);
+    assert.equal(event.baseURL, getClaudeProxyBaseUrl());
+    await (otherCleanup as () => Promise<void>)();
   } finally {
     await (cleanup as (() => Promise<void>) | undefined)?.();
   }

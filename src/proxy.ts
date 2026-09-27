@@ -412,6 +412,20 @@ export async function startProxy(): Promise<number> {
   }
 }
 
+// The listener is process-wide; an idle location must not stop another's turn.
+let proxyHolders = 0;
+
+export async function acquireProxy(): Promise<number> {
+  const port = await startProxy();
+  proxyHolders++;
+  return port;
+}
+
+export async function releaseProxy(): Promise<void> {
+  if (proxyHolders === 0) return;
+  if (--proxyHolders === 0) await stopProxy();
+}
+
 export async function stopProxy(): Promise<void> {
   stopSiblingWatch();
   // Parked turns each hold a live claude CLI child; nothing resumes them now.

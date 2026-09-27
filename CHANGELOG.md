@@ -67,6 +67,11 @@
 
 ### Fixes
 
+- **Shared proxy lifetime** — disposing an idle V2 location stopped the
+  process-wide proxy, killing parked and in-flight turns in other projects;
+  their provider settings could still point at its dead ephemeral port.
+  Locations now hold references to the shared proxy, and each request
+  refreshes its baseURL (ported from upstream 1.2.0).
 - **Tool media on V2** — V2 sends the images and PDFs a tool returns as a
   text-less user message right after the tool results, not V1's labelled
   "Attached media from tool result:" one. Only the V1 form was recognized,
