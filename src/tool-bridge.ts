@@ -81,6 +81,16 @@ const PARALLEL_SAFE_TOOLS = new Set([
   "task",
 ]);
 
+/** The CLI starts the leading consecutive read-only calls together. */
+export function expectedParallelGroup(names: readonly string[]): number {
+  let count = 0;
+  for (const name of names) {
+    if (!PARALLEL_SAFE_TOOLS.has(name)) break;
+    count++;
+  }
+  return Math.max(1, count);
+}
+
 /** JSON Schema (stringified) -> SDK-verified zod shape, or null. */
 const faithfulShapeCache = new Map<string, Record<string, unknown> | null>();
 

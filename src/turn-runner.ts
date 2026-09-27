@@ -12,6 +12,7 @@
 import { deleteBridge, type ParkedToolCall } from "./bridge-pool.js";
 import { log } from "./log.js";
 import type { ClaudeQueryHandle } from "./query.js";
+import { expectedParallelGroup } from "./tool-bridge.js";
 
 /**
  * A parked turn waits for the assistant message to close so that every tool
@@ -19,6 +20,8 @@ import type { ClaudeQueryHandle } from "./query.js";
  * PARALLEL_SAFE_TOOLS). This much silence from the CLI ends the wait.
  */
 const PARK_QUIET_MS = 3_000;
+// The CLI starts the message's tool calls just after message_stop, microseconds apart.
+const PARK_SETTLE_MS = 300;
 
 const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
 
@@ -89,6 +92,8 @@ export class TurnRunner {
    * the one that parked, so the park is held until the message closes.
    */
   private messageOpen = false;
+  private messageToolNames: string[] = [];
+  private settled = false;
   /** next() in flight when the turn parked; consumed on resume. */
   private pendingNext: Promise<IteratorResult<unknown>> | null = null;
   private reapTimer: ReturnType<typeof setTimeout> | null = null;
@@ -120,7 +125,13 @@ export class TurnRunner {
         // OpenCode in one response. Claude Code already grouped the calls it
         // may run side by side (read-only ones); here they are only forwarded.
         const holding = this.parked && this.pendingTools.size > 0;
-        if (holding && !this.messageOpen) {
+        if (
+          holding &&
+          !this.messageOpen &&
+          (this.settled ||
+            this.pendingTools.size >= expectedParallelGroup(this.messageToolNames))
+        ) {
+          this.settled = false;
           this.armParkReap();
           yield { type: "__park__", tools: [...this.pendingTools.values()] };
           return;
@@ -128,6 +139,7 @@ export class TurnRunner {
         const raced = await this.nextStep(iterator, holding);
         if (raced.kind === "park") continue;
         if (raced.kind === "quiet") {
+          if (!this.messageOpen) this.settled = true;
           this.messageOpen = false;
           continue;
         }
@@ -165,8 +177,6 @@ export class TurnRunner {
   ): Promise<Raced> {
     let cancelPark = (): void => {};
     const parkPromise = new Promise<Raced>((resolve) => {
-      // Already parked: the message close decides, not another park.
-      if (holding) return;
       const entry = () => resolve({ kind: "park" });
       this.parkWaiters.push(entry);
       cancelPark = () => {
@@ -176,7 +186,10 @@ export class TurnRunner {
     let quietTimer: ReturnType<typeof setTimeout> | null = null;
     const quietPromise = new Promise<Raced>((resolve) => {
       if (!holding) return;
-      quietTimer = setTimeout(() => resolve({ kind: "quiet" }), PARK_QUIET_MS);
+      quietTimer = setTimeout(
+        () => resolve({ kind: "quiet" }),
+        this.messageOpen ? PARK_QUIET_MS : PARK_SETTLE_MS,
+      );
       quietTimer.unref?.();
     });
     let stallTimer: ReturnType<typeof setTimeout> | null = null;
@@ -220,9 +233,24 @@ export class TurnRunner {
     // Only the stream's message_stop closes the message: the CLI emits an
     // `assistant` event after every content block, not once per message.
     if (e.type === "stream_event" && e.event && typeof e.event === "object") {
-      const type = (e.event as { type?: unknown }).type;
-      if (type === "message_start") this.messageOpen = true;
-      if (type === "message_stop") this.messageOpen = false;
+      const streamEvent = e.event as {
+        type?: unknown;
+        content_block?: { type?: unknown; name?: unknown };
+      };
+      if (streamEvent.type === "message_start") {
+        this.messageOpen = true;
+        this.messageToolNames = [];
+      }
+      if (streamEvent.type === "message_stop") this.messageOpen = false;
+      if (
+        streamEvent.type === "content_block_start" &&
+        streamEvent.content_block?.type === "tool_use" &&
+        typeof streamEvent.content_block.name === "string"
+      ) {
+        this.messageToolNames.push(
+          streamEvent.content_block.name.replace(/^mcp__opencode__/, ""),
+        );
+      }
     }
   }
 

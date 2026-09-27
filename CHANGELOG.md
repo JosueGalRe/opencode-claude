@@ -67,6 +67,10 @@
 
 ### Fixes
 
+- **Parallel tool handoff** — the CLI starts a message's tool calls just
+  after `message_stop`, so handing off the first registered call split a
+  read-only group across OpenCode steps. The runner now waits for the
+  announced group to start, bounded by 300 ms (ported from upstream 1.2.1).
 - **Shared proxy lifetime** — disposing an idle V2 location stopped the
   process-wide proxy, killing parked and in-flight turns in other projects;
   their provider settings could still point at its dead ephemeral port.
@@ -94,7 +98,6 @@
   tool Claude does not have); custom agent prompts, `Instructions from:`
   blocks and the skills list are still forwarded. Unrecognized V2 layouts
   forward nothing rather than risk the rejection.
-
 - **Rate-limit gate**: a transient 429 or unparseable limit message could
   reuse an unrelated window's reset (e.g. weekly) and block every turn for
   days. Only a recent rejection's reset is reused, otherwise the 10-minute
