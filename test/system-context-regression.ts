@@ -52,9 +52,8 @@ async function main() {
   assert.match(custom, /Run tests sequentially/);
   assert.ok(!custom.includes("Working directory"));
 
-  // V2 stock agent: "# Your Model"/<env>/Code Mode sections are Anthropic's
-  // third-party fingerprint and describe tools Claude does not have — all
-  // dropped; user instructions and the skills list still forwarded.
+  // V2 stock agent: model/env sections are Anthropic's third-party
+  // fingerprint; the Code Mode catalog is forwarded only with execute.
   const v2Env = [
     "# Your Model",
     "- Name: Sonnet 5",
@@ -65,9 +64,13 @@ async function main() {
     "</env>",
     "Today's date: Tue Sep 22 2026",
     "# Code Mode",
-    "Use the `execute` tool to call the tools listed below.",
+    "Use the `execute` tool to call the tools listed below. They cannot be called directly, and neither can `search`. Both only work inside code you pass to `execute`.",
+    "The catalog is partial. Inside `execute`, use `search(...)` to find a tool, then call it by the `path` in the result. `search` is synchronous. Call it without `await`; it does not return a Promise. Do not guess tool names.",
     "## Available tools",
-    "- browser (45 tools, 9 shown)",
+    "- railway (47 tools, 1 shown)",
+    "  - tools.railway.whoami(): Promise<unknown>",
+    "- openchamber (1 tool)",
+    "  - tools.openchamber({ action }): Promise<string | null>",
   ].join("\n");
   const v2Stock = openCodeSystemContext([
     {
@@ -84,6 +87,31 @@ async function main() {
   assert.ok(!v2Stock.includes("# Agent role"));
   assert.match(v2Stock, /Run tests sequentially/);
   assert.match(v2Stock, /<name>pdf<\/name>/);
+
+  const v2Messages = [{ role: "system", content: `You are an AI agent running in OpenCode, a coding agent harness.\n\n${v2Env}\n\n${INSTRUCTIONS}\n\n${SKILLS}` }];
+  const noExecute = turnSystemPrompt(null, v2Messages, ["read"]);
+  assert.ok(typeof noExecute !== "string");
+  assert.ok(!noExecute.append?.includes("tools.railway"));
+  assert.match(noExecute.append ?? "", /Run tests sequentially/);
+
+  const withExecute = turnSystemPrompt(null, v2Messages, ["execute"]);
+  assert.ok(typeof withExecute !== "string");
+  const append = withExecute.append ?? "";
+  assert.match(append, /tools\.railway\.whoami/);
+  assert.match(append, /tools\.openchamber/);
+  assert.equal(append.match(/# Code Mode/g)?.length, 1);
+  assert.match(append, /mcp__opencode__execute/);
+  assert.match(append, /Run tests sequentially/);
+  assert.match(append, /<name>pdf<\/name>/);
+  assert.ok(append.indexOf("tools.openchamber") < append.indexOf("Run tests sequentially"));
+  assert.doesNotMatch(append, /# Your Model|Working directory|Today's date|coding agent harness/);
+
+  const noInstructions = turnSystemPrompt(null, [
+    { role: "system", content: `You are an AI agent running in OpenCode.\n\n${v2Env}\n# Skills\nprivate rules` },
+  ], ["execute"]);
+  assert.ok(typeof noInstructions !== "string");
+  assert.match(noInstructions.append ?? "", /tools\.railway\.whoami/);
+  assert.doesNotMatch(noInstructions.append ?? "", /# Skills|private rules/);
 
   // V2 custom agent: its prompt replaces the stock opener and is forwarded.
   const v2Custom = openCodeSystemContext([
@@ -123,6 +151,7 @@ async function main() {
   ));
   assert.ok(!v2Summary.includes("Your Model"), "v2 compaction drops the system prompt");
   assert.ok(!v2Summary.includes("pirate tester"));
+  assert.ok(!v2Summary.includes("tools.railway"));
   assert.match(v2Summary, /single-turn text transformation/);
   const v1Summary = String(turnSystemPrompt(
     "summary",

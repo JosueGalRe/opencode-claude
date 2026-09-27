@@ -54,8 +54,8 @@ export function systemContextForwardingEnabled(): boolean {
  *
  * V2 matters doubly: its stock "# Your Model" + <env> section makes Anthropic
  * reject subscription credentials as third-party usage (400 "Third-party
- * apps…"), and its "# Code Mode" tool catalog describes an `execute` tool
- * Claude does not have. Both must never reach the Claude request.
+ * apps…"). Its Code Mode catalog is forwarded separately only when the
+ * `execute` tool is bridged.
  */
 export function openCodeSystemContext(messages: MessageLike[]): string {
   const system = metaSystemPrompt(messages).trim();
@@ -108,7 +108,7 @@ function bridgedToolRules(toolNames: string[]): string {
   }
   if (toolNames.includes("execute")) {
     rules.push(
-      "Code mode: mcp__opencode__execute({ code }) runs JavaScript in OpenCode's confined runtime — prefer it over many direct mcp__opencode__* calls when several tool operations must be chained or batched into one result. Inside `code` the mcp__opencode__* tools are not visible; call host tools as tools.<path>(input) and discover exact paths and signatures with the synchronous search({ query }) function before using them. `fetch` is available; imports, filesystem access and timers are not. Await every call whose result you use (Promise.all for independent calls) and return the composed result explicitly.",
+      "mcp__opencode__execute({ code }) runs JavaScript in OpenCode's confined runtime. Inside `code`, call host tools as tools.<path>(input) and discover exact signatures with search({ query }); `fetch` works, but imports, filesystem access and timers do not. Await calls and return the result.",
     );
   }
   return rules.join(" ");
@@ -150,11 +150,27 @@ export function turnSystemPrompt(
     ].join("\n\n");
   }
   const preset: ClaudeCodePreset = { type: "preset", preset: "claude_code" };
-  const context = systemContextForwardingEnabled()
+  const forwardContext = systemContextForwardingEnabled();
+  const context = forwardContext
     ? openCodeSystemContext(messages)
     : "";
+  const system = metaSystemPrompt(messages);
+  const modelAt = system.search(V2_MODEL_MARKER);
+  const envEnd = system.indexOf("</env>", modelAt);
+  const codeModeAt =
+    forwardContext && bridgedToolNames?.includes("execute") &&
+    modelAt >= 0 && envEnd >= 0
+      ? system.indexOf("\n# Code Mode\n", envEnd)
+      : -1;
+  const codeMode = codeModeAt < 0
+    ? ""
+    : system.slice(codeModeAt + 1).split(
+        /\n(?=# [^\n]|Instructions from:|Skills provide specialized instructions|<available_skills>|<mcp_instructions>)/,
+        1,
+      )[0]?.trim() ?? "";
   const append = [
     bridgedToolNames ? bridgedToolRules(bridgedToolNames) : "",
+    codeMode ? `${codeMode}\n\nThe \`execute\` tool above is mcp__opencode__execute.` : "",
     context,
   ]
     .filter(Boolean)

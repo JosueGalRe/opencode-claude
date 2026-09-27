@@ -67,6 +67,10 @@
 
 ### Fixes
 
+- **Code Mode catalog on V2** — dropping the stock system prompt also hid
+  the `execute` tool's MCP and OpenChamber namespaces, leaving Claude unable
+  to discover them. Forward only its catalog when `execute` is bridged, not
+  the model and environment fingerprint (ported from upstream 1.2.3).
 - **Stopped sessions and model fallbacks** — interrupting a session with
   parked tools left its Claude process running until the one-hour TTL, and
   refusal fallback was invisible while another model answered. Stop events
@@ -108,10 +112,10 @@
   section makes Anthropic classify the request as a third-party app and
   reject the subscription credential. `openCodeSystemContext` now recognizes
   the V2 layout and drops the stock base prompt, the Your Model/env/date
-  sections, and the Code Mode tool catalog (which describes an `execute`
-  tool Claude does not have); custom agent prompts, `Instructions from:`
-  blocks and the skills list are still forwarded. Unrecognized V2 layouts
-  forward nothing rather than risk the rejection.
+  sections; custom agent prompts, `Instructions from:` blocks and the skills
+  list are still forwarded. The Code Mode catalog is forwarded separately
+  only when `execute` is bridged. Unrecognized V2 layouts forward nothing
+  rather than risk the rejection.
 - **Rate-limit gate**: a transient 429 or unparseable limit message could
   reuse an unrelated window's reset (e.g. weekly) and block every turn for
   days. Only a recent rejection's reset is reused, otherwise the 10-minute
