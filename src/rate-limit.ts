@@ -122,6 +122,10 @@ export function recordRateLimitInfo(info: unknown): ClaudeRateLimitState | null 
         : prev.resetsAt,
     updatedAt: Date.now(),
   };
+  if (next.status === "allowed" || next.status === "allowed_warning") {
+    next.limited = false;
+    delete next.limitedUntil;
+  }
   writeState(next);
   return next;
 }

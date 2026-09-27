@@ -118,6 +118,8 @@ import {
 
 const SHARED_PROXY_HEALTH_TIMEOUT_MS = 750;
 
+const gateChecked = new Set<string>();
+
 /** OPENCODE_CLAUDE_HOST_TRANSCRIPT=0 disables host-history divergence detection. */
 function hostTranscriptWatchEnabled(): boolean {
   const raw = (process.env.OPENCODE_CLAUDE_HOST_TRANSCRIPT ?? "")
@@ -965,8 +967,17 @@ async function handleChatCompletions(
   // Retry-After instead of spawning a doomed Agent SDK turn (which would
   // surface as a fake "completed" assistant message and burn time).
   // Placed after input validation so malformed requests still get 400.
+  // A stored limit may have reset early: try each new message once, but
+  // refuse automatic retries of a message Claude already rejected.
+  const gateKey = `${conversationKey}:${messages.length}`;
   const gate = rateLimitGate();
-  if (gate.blocked) {
+  const alreadyTried = gateChecked.has(gateKey);
+  gateChecked.add(gateKey);
+  if (gateChecked.size > 500) {
+    const oldest = gateChecked.values().next().value;
+    if (oldest !== undefined) gateChecked.delete(oldest);
+  }
+  if (gate.blocked && alreadyTried) {
     log.warn("[opencode-claude] rate-limit gate blocked a turn", {
       conversationKey,
       retryAfterSeconds: gate.retryAfterSeconds,

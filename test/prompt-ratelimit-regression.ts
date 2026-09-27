@@ -27,6 +27,7 @@ import {
   parseResetTimeFromText,
   recordRateLimitErrorText,
   recordRateLimitInfo,
+  rateLimitGate,
 } from "../src/rate-limit.ts";
 import { detectMetaRequestKind } from "../src/request-kind.ts";
 
@@ -66,6 +67,15 @@ async function main() {
     });
     const hard = recordRateLimitErrorText("You've hit your session limit");
     assert.equal(hard!.limitedUntil, rejectedReset * 1000);
+
+    for (const status of ["allowed_warning", "allowed"]) {
+      recordRateLimitErrorText("You've hit your session limit");
+      assert.equal(rateLimitGate().blocked, true);
+      const reopened = recordRateLimitInfo({ status });
+      assert.equal(reopened?.limited, false, `${status} lifts the block`);
+      assert.equal(reopened?.limitedUntil, undefined);
+      assert.equal(rateLimitGate().blocked, false);
+    }
 
     // A bare HTTP status is not a limit message.
     assert.equal(isClaudeRateLimitText("API Error: 429 Internal hiccup"), false);

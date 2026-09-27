@@ -67,6 +67,11 @@
 
 ### Fixes
 
+- **Stale rate-limit block** — an early reset left the gate answering 429
+  until the old deadline, and no turn could reach Claude to clear it. An
+  allowed event now lifts the block; each new message may check once while
+  automatic retries of the same message remain gated (ported from upstream
+  1.2.2).
 - **Thinking summaries** — the CLI emitted thinking blocks without text,
   leaving the UI blank while Claude reasoned before the answer appeared.
   Request summarized thinking with the SDK's typed `thinking.display` option;

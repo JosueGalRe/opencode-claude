@@ -1350,7 +1350,7 @@ async function main() {
       assert.equal(gate.blocked, true);
       if (gate.blocked) assert.ok(gate.retryAfterSeconds > 0);
 
-      // Fast-fail: new main turns get HTTP 429 + Retry-After + reset headers
+      // Fast-fail: retries of a tried main turn get HTTP 429 + Retry-After.
       const blockedRes = await fetch(
         `http://127.0.0.1:${port}/v1/chat/completions`,
         {
@@ -1358,12 +1358,12 @@ async function main() {
           headers: {
             "content-type": "application/json",
             [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
-            "x-opencode-claude-session": "smoke-mock-blocked",
+            "x-opencode-claude-session": "smoke-mock-err",
           },
           body: JSON.stringify({
             model: "sonnet",
             stream: false,
-            messages: [{ role: "user", content: "hi again" }],
+            messages: [{ role: "user", content: "hi" }],
           }),
         },
       );
@@ -1506,6 +1506,45 @@ async function main() {
       assert.equal(rateLimitGate().blocked, false);
       delete process.env.OPENCODE_CLAUDE_RATE_LIMIT_FAST_FAIL;
       assert.equal(rateLimitGate().blocked, true);
+
+      // A new message can check an early reset once, but an automatic retry
+      // of that same message cannot launch another doomed CLI turn.
+      let checks = 0;
+      setClaudeQueryStarter(async () => {
+        checks++;
+        return {
+          stream: (async function* () {
+            yield { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "checked" } } };
+            yield { type: "result", is_error: false, usage: {} };
+          })(),
+          close: () => {},
+        };
+      });
+      const gateMessages = [
+        { role: "user", content: "first question" },
+        { role: "assistant", content: "previous answer" },
+        { role: "user", content: "new question after early reset" },
+      ];
+      const checkGate = (messages: typeof gateMessages) => fetch(
+        `http://127.0.0.1:${port}/v1/chat/completions`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
+            "x-opencode-claude-session": "smoke-mock-gate-check",
+          },
+          body: JSON.stringify({ model: "sonnet", stream: false, messages }),
+        },
+      );
+      const firstCheck = await checkGate(gateMessages);
+      assert.equal(firstCheck.status, 200, "new message checks Claude once");
+      await firstCheck.text();
+      assert.equal(checks, 1);
+      const repeatedCheck = await checkGate(gateMessages);
+      assert.equal(repeatedCheck.status, 429, "retry stays gated");
+      assert.ok(repeatedCheck.headers.get("retry-after"));
+      assert.equal(checks, 1, "retry never reaches query starter");
 
       // Expired hard block self-heals on read
       const { writeFileSync } = await import("node:fs");
