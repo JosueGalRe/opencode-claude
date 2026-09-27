@@ -39,9 +39,37 @@ async function main() {
   let added: { info: any; models: any[] } | null = null;
   let methodRegistration: any = null;
   const hooks = new Map<string, (event: any) => Promise<void>>();
+  const stopEvents: Array<{
+    type: "session.execution.interrupted" | "session.execution.failed";
+    data: { sessionID: string };
+  }> = [];
+  const subscriptions: AbortSignal[] = [];
+  let wakeEvents: (() => void) | undefined;
+  const emitStop = (event: typeof stopEvents[number]) => {
+    stopEvents.push(event);
+    wakeEvents?.();
+  };
 
   const ctx = {
     location: { directory: "/work/project" },
+    event: {
+      subscribe({ signal }: { signal: AbortSignal }) {
+        subscriptions.push(signal);
+        return (async function* () {
+          while (!signal.aborted) {
+            if (stopEvents.length === 0) {
+              await new Promise<void>((resolve) => {
+                wakeEvents = resolve;
+                signal.addEventListener("abort", resolve, { once: true });
+              });
+            }
+            if (signal.aborted) return;
+            const event = stopEvents.shift();
+            if (event) yield event;
+          }
+        })();
+      },
+    },
     provider: {
       async transform(callback: (editor: any) => void) {
         callback({
@@ -79,6 +107,30 @@ async function main() {
 
   const cleanup = await plugin.setup(ctx as never);
   try {
+    const { getBridge, putBridge } = await import("../src/bridge-pool.ts");
+    let stopped = () => {};
+    const stoppedTurn = new Promise<void>((resolve) => { stopped = resolve; });
+    const bridge = (sessionID: string, close: () => void) => ({
+      id: sessionID,
+      conversationKey: sessionID,
+      handle: { stream: (async function* () {})(), close },
+      pendingTools: new Map(),
+      seenAssistantUsageIds: new Set<string>(),
+      resume: async function* () {},
+    });
+    putBridge(bridge("sess-stopped", stopped));
+    putBridge(bridge("sess-other", () => {}));
+    emitStop({ type: "session.execution.interrupted", data: { sessionID: "sess-stopped" } });
+    await stoppedTurn;
+    assert.equal(getBridge("sess-stopped"), undefined);
+    assert.ok(getBridge("sess-other"), "other session keeps its parked turn");
+    let failed = () => {};
+    const failedTurn = new Promise<void>((resolve) => { failed = resolve; });
+    putBridge(bridge("sess-failed", failed));
+    emitStop({ type: "session.execution.failed", data: { sessionID: "sess-failed" } });
+    await failedTurn;
+    assert.equal(getBridge("sess-failed"), undefined);
+    assert.ok(getBridge("sess-other"));
     assert.ok(getProxyPort(), "proxy started by setup");
     assert.ok(added, "provider registered");
     assert.equal(added!.info.name, "Claude Code");
@@ -157,6 +209,35 @@ async function main() {
     });
     assert.equal(admitted.status, 400, "authorized request reaches validation");
 
+    const { setClaudeQueryStarter } = await import("../src/proxy.ts");
+    setClaudeQueryStarter(async () => ({
+      stream: (async function* () {
+        yield {
+          type: "system", subtype: "model_refusal_fallback",
+          original_model: "claude-fable-5-1", fallback_model: "claude-opus-5-5",
+          api_refusal_category: "bio",
+        };
+        yield { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "answer" } } };
+        yield { type: "result", is_error: false, usage: {} };
+      })(),
+      close: () => {},
+    }));
+    try {
+      const fallback = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", [PROXY_TOKEN_HEADER]: token,
+          [SESSION_HEADER]: "sess-fallback" },
+        body: JSON.stringify({ model: "sonnet", stream: true,
+          messages: [{ role: "user", content: "question" }] }),
+      });
+      assert.equal(fallback.status, 200);
+      const text = await fallback.text();
+      assert.match(text, /reasoning_content/);
+      assert.match(text, /claude-fable-5-1 declined this request \(bio\); claude-opus-5-5 answered/);
+    } finally {
+      setClaudeQueryStarter(null);
+    }
+
     // Other providers are untouched.
     const foreign = {
       sessionID: "s",
@@ -171,6 +252,7 @@ async function main() {
     await onModelRequest!(event);
     assert.equal(event.baseURL, getClaudeProxyBaseUrl());
     await (otherCleanup as () => Promise<void>)();
+    assert.ok(subscriptions.every((signal) => signal.aborted), "cleanup aborts event streams");
   } finally {
     await (cleanup as (() => Promise<void>) | undefined)?.();
   }

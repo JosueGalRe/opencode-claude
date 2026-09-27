@@ -21,6 +21,7 @@ import {
   SESSION_HEADER,
 } from "./constants.js";
 import { detectClaudeCode } from "./detect.js";
+import { deleteBridgesByConversation } from "./bridge-pool.js";
 import { resolveClaudeCli } from "./executable-path.js";
 import { log } from "./log.js";
 import {
@@ -116,6 +117,7 @@ function toModelInfo(definition: {
 
 export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
   await acquireProxy();
+  const eventController = new AbortController();
   try {
     await ctx.provider.transform((editor) => {
       editor.add({
@@ -173,11 +175,30 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
       event.headers[DIRECTORY_HEADER] = ctx.location.directory;
       event.headers[REQUEST_KIND_HEADER] = event.kind;
     });
+    // A parked turn has no HTTP request to cancel when its session stops.
+    void (async () => {
+      try {
+        for await (const event of ctx.event.subscribe({ signal: eventController.signal })) {
+          if (
+            event.type === "session.execution.interrupted" ||
+            event.type === "session.execution.failed"
+          ) {
+            deleteBridgesByConversation(event.data.sessionID);
+          }
+        }
+      } catch (error) {
+        if (!eventController.signal.aborted) {
+          log.warn("[opencode-claude] session event stream failed", error);
+        }
+      }
+    })();
   } catch (error) {
+    eventController.abort();
     await releaseProxy();
     throw error;
   }
   return async () => {
+    eventController.abort();
     await releaseProxy();
     log.info("[opencode-claude] V2 plugin unloaded");
   };

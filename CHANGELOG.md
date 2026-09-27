@@ -67,6 +67,11 @@
 
 ### Fixes
 
+- **Stopped sessions and model fallbacks** — interrupting a session with
+  parked tools left its Claude process running until the one-hour TTL, and
+  refusal fallback was invisible while another model answered. Stop events
+  now close that session's parked turns, and the fallback appears in the
+  reasoning stream (ported from upstream 1.2.2).
 - **Stale rate-limit block** — an early reset left the gate answering 429
   until the old deadline, and no turn could reach Claude to clear it. An
   allowed event now lifts the block; each new message may check once while

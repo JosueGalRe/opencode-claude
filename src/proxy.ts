@@ -1732,6 +1732,19 @@ function mapSdkEvent(event: unknown): MappedEvent {
     return note ? { kind: "reasoning", text: note } : { kind: "ignore" };
   }
 
+  if (e.type === "system" && e.subtype === "model_refusal_fallback") {
+    const from = typeof e.original_model === "string" ? e.original_model : "selected model";
+    const to = typeof e.fallback_model === "string" ? e.fallback_model : "another model";
+    const category =
+      typeof e.api_refusal_category === "string"
+        ? ` (${e.api_refusal_category})`
+        : "";
+    return {
+      kind: "reasoning",
+      text: `[model] ${from} declined this request${category}; ${to} answered.\n`,
+    };
+  }
+
   // Auto-compact boundary — surface as a short reasoning note for the UI.
   if (e.type === "system" && e.subtype === "compact_boundary") {
     return {
