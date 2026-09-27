@@ -132,8 +132,8 @@ export type StartClaudeQueryParams = {
   persistSession?: boolean;
   /** Thinking config; defaults to adaptive when effort is set. */
   thinking?:
-    | { type: "adaptive" }
-    | { type: "enabled"; budgetTokens: number }
+    | { type: "adaptive"; display?: "summarized" | "omitted" }
+    | { type: "enabled"; budgetTokens: number; display?: "summarized" | "omitted" }
     | { type: "disabled" };
   queryImpl?: (mod: SdkModule) => unknown;
 };
@@ -198,10 +198,12 @@ export async function startClaudeQuery(
   if (isClaudeEffort(effort)) options.effort = effort;
 
   if (params.thinking) {
-    options.thinking = params.thinking;
+    options.thinking = params.thinking.type === "disabled"
+      ? params.thinking
+      : { ...params.thinking, display: "summarized" };
   } else if (isClaudeEffort(effort)) {
     // Effort guides adaptive thinking depth on models that support it.
-    options.thinking = { type: "adaptive" };
+    options.thinking = { type: "adaptive", display: "summarized" };
   }
 
   // Only the servers passed in `mcpServers` (the OpenCode tool bridge): the

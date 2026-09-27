@@ -355,6 +355,28 @@ async function main() {
     disableClaudeAiConnectors: true,
     autoCompactEnabled: false,
   });
+  assert.equal(sdkOptions!.thinking, undefined);
+  await startClaudeQuery({
+    prompt: "hi", cwd: process.cwd(), effort: "medium",
+    thinking: { type: "adaptive" },
+    queryImpl: () => (input: { options: Record<string, unknown> }) => {
+      sdkOptions = input.options;
+      return {};
+    },
+  });
+  assert.deepEqual(sdkOptions!.thinking, { type: "adaptive", display: "summarized" });
+  assert.equal((sdkOptions!.settings as Record<string, unknown>).showThinkingSummaries, undefined);
+  assert.equal(sdkOptions!.extraArgs, undefined);
+  await startClaudeQuery({
+    prompt: "hi", cwd: process.cwd(), thinking: { type: "disabled" },
+    queryImpl: () => (input: { options: Record<string, unknown> }) => {
+      sdkOptions = input.options;
+      return {};
+    },
+  });
+  assert.deepEqual(sdkOptions!.thinking, { type: "disabled" });
+  assert.equal((sdkOptions!.settings as Record<string, unknown>).showThinkingSummaries, undefined);
+  assert.equal(sdkOptions!.extraArgs, undefined);
 
   // Models / effort
   const models = getClaudeModels();

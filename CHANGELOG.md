@@ -67,6 +67,10 @@
 
 ### Fixes
 
+- **Thinking summaries** — the CLI emitted thinking blocks without text,
+  leaving the UI blank while Claude reasoned before the answer appeared.
+  Request summarized thinking with the SDK's typed `thinking.display` option;
+  disabled-thinking meta turns remain unchanged (ported from upstream 1.2.0).
 - **Parallel tool handoff** — the CLI starts a message's tool calls just
   after `message_stop`, so handing off the first registered call split a
   read-only group across OpenCode steps. The runner now waits for the
