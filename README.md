@@ -95,7 +95,7 @@ opencode run "Summarise this repository in five bullets." --model claude-code/so
 | --- | --- | --- |
 | `fable` · `opus` · `sonnet` | Fable 5 · Opus 5 · Sonnet 5 (aliases; the CLI picks the concrete model) | 1M |
 | `haiku` | Haiku 4.5 | 200k |
-| `claude-fable-5-1` · `claude-opus-5-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Pinned versions | 1M |
+| `claude-fable-5-1` · `claude-opus-5-5` · `claude-sonnet-5-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Pinned versions | 1M |
 
 The effort variants `low` · `medium` · `high` · `xhigh` · `max` map to Claude Code's `--effort` with adaptive thinking. Title and summary requests run without effort or thinking.
 

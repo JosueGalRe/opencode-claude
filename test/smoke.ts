@@ -396,6 +396,8 @@ async function main() {
   assert.ok(aliasModel("claude-fable-5-1"));
   assert.ok(aliasModel("claude-opus-5-5"));
   assert.equal(aliasModel("claude-opus-5-5").inputWindow, 900_000);
+  assert.ok(aliasModel("claude-sonnet-5-5"));
+  assert.equal(aliasModel("claude-sonnet-5-5").inputWindow, 900_000);
 
   const sonnet = CLAUDE_CODE_MODELS.find((m) => m.id === "sonnet")!;
   const variants = buildEffortVariants(sonnet);
