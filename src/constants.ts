@@ -1,5 +1,4 @@
 export const PROVIDER_ID = "claude-code";
-export const DEFAULT_MODEL_ID = "sonnet";
 export const OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible";
 
 export const EFFORT_HEADER = "x-opencode-claude-effort";

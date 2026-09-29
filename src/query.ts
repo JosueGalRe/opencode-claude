@@ -413,3 +413,38 @@ export async function startClaudeQuery(
     close,
   });
 }
+
+/** Idle SDK query: reads CLI model metadata without sending a prompt or model call. */
+export async function listClaudeSupportedModels(
+  timeoutMs = 20_000,
+): Promise<import("@anthropic-ai/claude-agent-sdk").ModelInfo[] | null> {
+  const sdk = await loadClaudeAgentSdk();
+  let release: () => void = () => {};
+  const idle = (async function* () {
+    await new Promise<void>((resolve) => { release = resolve; });
+  })();
+  const env = buildClaudeCodeChildEnv(process.env);
+  const pathToClaudeCodeExecutable = await resolveClaudeCodeExecutable({ env });
+  const query = sdk.query({
+    prompt: idle,
+    options: {
+      env,
+      persistSession: false,
+      settingSources: [],
+      strictMcpConfig: true,
+      settings: { disableClaudeAiConnectors: true },
+      ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
+    },
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      query.supportedModels(),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    release();
+    query.close();
+  }
+}

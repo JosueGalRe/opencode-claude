@@ -11,7 +11,6 @@
  */
 import type { Hooks, Plugin, PluginInput } from "@opencode-ai/plugin";
 import {
-  DEFAULT_MODEL_ID,
   DIRECTORY_HEADER,
   EFFORT_HEADER,
   OPENAI_COMPATIBLE_NPM,
@@ -35,8 +34,10 @@ import {
   buildConfigVariants,
   buildEffortVariants,
   getClaudeModels,
+  refreshClaudeModels,
   type ClaudeModel,
 } from "./models.js";
+import { listClaudeSupportedModels } from "./query.js";
 import {
   getClaudeProxyBaseUrl,
   getProxyAuthToken,
@@ -78,9 +79,7 @@ function buildProviderModel(
       url: baseURL,
       npm: OPENAI_COMPATIBLE_NPM,
     },
-    name: id === DEFAULT_MODEL_ID && model.id !== DEFAULT_MODEL_ID
-      ? `Default (${model.name})`
-      : model.name,
+    name: model.name,
     capabilities: {
       temperature: true,
       // Runtime models expose reasoning so streams can carry thinking deltas.
@@ -166,15 +165,6 @@ function buildClaudeProviderModels(
   const providerModels = Object.fromEntries(
     models.map((model) => [model.id, buildProviderModel(model, model.id, baseURL)]),
   );
-  const defaultModel =
-    models.find((m) => m.id === DEFAULT_MODEL_ID) || models[0];
-  if (defaultModel && !(DEFAULT_MODEL_ID in providerModels)) {
-    providerModels[DEFAULT_MODEL_ID] = buildProviderModel(
-      defaultModel,
-      DEFAULT_MODEL_ID,
-      baseURL,
-    );
-  }
   return providerModels;
 }
 
@@ -200,14 +190,6 @@ function ensureClaudeProviderConfig(
   const seededModels = Object.fromEntries(
     models.map((model) => [model.id, buildConfigModelEntry(model)]),
   );
-  const defaultModel =
-    models.find((m) => m.id === DEFAULT_MODEL_ID) || models[0];
-  if (defaultModel && !(DEFAULT_MODEL_ID in seededModels)) {
-    seededModels[DEFAULT_MODEL_ID] = {
-      ...buildConfigModelEntry(defaultModel),
-      name: `Default (${defaultModel.name})`,
-    };
-  }
 
   config.provider[PROVIDER_ID] = {
     ...existing,
@@ -255,6 +237,11 @@ export const ClaudeCodePlugin: Plugin = async (
   input: PluginInput,
 ): Promise<Hooks> => {
   const cliPresent = await probeCliPresence();
+  if (cliPresent) {
+    void refreshClaudeModels(listClaudeSupportedModels).catch((err: unknown) =>
+      log.warn("[opencode-claude] could not read the model list from Claude Code", err),
+    );
+  }
   return {
     async config(config) {
       // Bind first (ephemeral port by default), then seed provider baseURL so
@@ -516,5 +503,5 @@ Or use the “Install Claude Code CLI and sign in” action here instead.`,
 export default { ...claudeCodePluginV2, server: ClaudeCodePlugin };
 
 export { detectClaudeCode } from "./detect.js";
-export { getClaudeModels, CLAUDE_CODE_MODELS } from "./models.js";
+export { getClaudeModels } from "./models.js";
 export { startProxy, stopProxy, getClaudeProxyBaseUrl } from "./proxy.js";

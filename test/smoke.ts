@@ -18,7 +18,6 @@ async function main() {
     interpretClaudeAuthStatus,
   } = await import("../src/detect.ts");
   const {
-    CLAUDE_CODE_MODELS,
     buildEffortVariants,
     getClaudeModels,
     resolveClaudeModelId,
@@ -387,25 +386,20 @@ async function main() {
   // Models / effort
   const models = getClaudeModels();
   assert.ok(models.length >= 4);
-  assert.ok(models.some((m) => m.id === "sonnet"));
-  assert.ok(models.some((m) => m.id === "opus"));
-  assert.equal(resolveClaudeModelId("haiku"), "claude-haiku-4-5");
-  assert.equal(resolveClaudeModelId("sonnet"), "sonnet");
+  assert.ok(models.some((m) => m.id === "claude-sonnet-5"));
+  assert.ok(models.some((m) => m.id === "claude-opus-5-5[1m]"));
+  assert.equal(resolveClaudeModelId("claude-haiku-4-5"), "claude-haiku-4-5");
+  assert.equal(resolveClaudeModelId("claude-sonnet-5[1m]"), "claude-sonnet-5[1m]");
 
   // 1M models declare an input window so OpenCode's auto-compaction trigger
   // (limit.input minus reserved) fires predictably; 200K models stay untouched.
-  const aliasModel = (id: string) => CLAUDE_CODE_MODELS.find((m) => m.id === id)!;
-  assert.equal(aliasModel("fable").inputWindow, 900_000);
-  assert.equal(aliasModel("opus").inputWindow, 900_000);
-  assert.equal(aliasModel("sonnet").inputWindow, 900_000);
-  assert.equal(aliasModel("haiku").inputWindow, undefined);
-  assert.ok(aliasModel("claude-fable-5-1"));
-  assert.ok(aliasModel("claude-opus-5-5"));
-  assert.equal(aliasModel("claude-opus-5-5").inputWindow, 900_000);
-  assert.ok(aliasModel("claude-sonnet-5-5"));
-  assert.equal(aliasModel("claude-sonnet-5-5").inputWindow, 900_000);
+  const catalogModel = (id: string) => models.find((m) => m.id === id)!;
+  assert.equal(catalogModel("claude-fable-5-1[1m]").inputWindow, 900_000);
+  assert.equal(catalogModel("claude-opus-5-5[1m]").inputWindow, 900_000);
+  assert.equal(catalogModel("claude-sonnet-5[1m]").inputWindow, 900_000);
+  assert.equal(catalogModel("claude-haiku-4-5").inputWindow, undefined);
 
-  const sonnet = CLAUDE_CODE_MODELS.find((m) => m.id === "sonnet")!;
+  const sonnet = catalogModel("claude-sonnet-5");
   const variants = buildEffortVariants(sonnet);
   for (const level of EFFORT_LEVELS) {
     assert.ok(variants[level]);

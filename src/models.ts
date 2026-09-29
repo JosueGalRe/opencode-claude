@@ -1,7 +1,9 @@
-/**
- * Claude Code model catalog (from OpenChamber harness registry).
- */
-import { EFFORT_LEVELS, type ClaudeEffort } from "./constants.js";
+/** Claude Code model catalog, discovered from the local CLI. */
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { z } from "zod";
+import { EFFORT_LEVELS, isClaudeEffort, type ClaudeEffort } from "./constants.js";
 
 export type ClaudeModel = {
   id: string;
@@ -10,106 +12,170 @@ export type ClaudeModel = {
   contextWindow: number;
   maxTokens: number;
   inputWindow?: number;
-  resolvedId?: string;
+  efforts: ClaudeEffort[];
 };
 
-// Declare an input window so OpenCode's auto-compaction trigger (input − reserved)
-// fires predictably (~90%) instead of falling back to (context − output).
 const LIMIT_1M = { context: 1_000_000, input: 900_000, output: 128_000 } as const;
 const LIMIT_200K = { context: 200_000, output: 64_000 } as const;
+const MODEL_REFRESH_INTERVAL_MS = 10 * 60_000;
 
 /** OpenCode may inject these before merging plugin variants — disable extras. */
 export const GENERATED_VARIANT_KEYS = [
-  "none",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
+  "none", "minimal", "low", "medium", "high", "xhigh", "max",
 ] as const;
 
 function model(
   id: string,
   name: string,
   limit: { context: number; input?: number; output: number },
-  resolvedId?: string,
+  efforts: ClaudeEffort[] = [...EFFORT_LEVELS],
 ): ClaudeModel {
   return {
-    id,
-    name,
-    reasoning: true,
+    id, name,
+    reasoning: efforts.length > 0,
     contextWindow: limit.context,
     maxTokens: limit.output,
     ...(limit.input ? { inputWindow: limit.input } : {}),
-    ...(resolvedId ? { resolvedId } : {}),
+    efforts,
   };
 }
 
-const ALIAS_MODELS: ClaudeModel[] = [
-  model("fable", "Fable 5", LIMIT_1M),
-  model("opus", "Opus 5", LIMIT_1M),
-  model("sonnet", "Sonnet 5", LIMIT_1M),
-  model("haiku", "Haiku 4.5", LIMIT_200K, "claude-haiku-4-5"),
-];
-
-const PINNED_MODELS: ClaudeModel[] = [
-  model("claude-fable-5-1", "Fable 5.1", LIMIT_1M),
-  model("claude-opus-5-5", "Opus 5.5", LIMIT_1M),
-  model("claude-sonnet-5-5", "Sonnet 5.5", LIMIT_1M),
+/** Used before discovery or when the CLI is unavailable. No moving aliases. */
+const FALLBACK_MODELS: ClaudeModel[] = [
+  model("claude-opus-5-5[1m]", "Opus 5.5", LIMIT_1M),
+  model("claude-fable-5-1[1m]", "Fable 5.1", LIMIT_1M),
+  model("claude-sonnet-5", "Sonnet 5", LIMIT_200K),
+  model("claude-sonnet-5[1m]", "Sonnet 5 (1M)", LIMIT_1M),
+  model("claude-haiku-4-5", "Haiku 4.5", LIMIT_200K, []),
   model("claude-opus-4-8", "Opus 4.8", LIMIT_1M),
-  model("claude-sonnet-4-6", "Sonnet 4.6", LIMIT_1M),
-  model("claude-haiku-4-5", "Haiku 4.5", LIMIT_200K),
 ];
 
-function buildCatalog(): ClaudeModel[] {
-  const aliasResolved = new Set(
-    ALIAS_MODELS.map((m) => m.resolvedId).filter(
-      (id): id is string => typeof id === "string" && id.length > 0,
-    ),
-  );
-  const aliasNames = new Set(ALIAS_MODELS.map((m) => m.name));
-  const visiblePins = PINNED_MODELS.filter(
-    (m) => !aliasResolved.has(m.id) && !aliasNames.has(m.name),
-  );
-  return [...ALIAS_MODELS, ...visiblePins];
+export type SdkModelRow = {
+  value: string;
+  displayName?: string;
+  resolvedModel?: string;
+  supportedEffortLevels?: string[];
+};
+
+/** default: only 1M; optional: both; fixed: plain id already uses 1M. */
+const ONE_M_FAMILIES: Array<{ match: RegExp; mode: "default" | "optional" | "fixed" }> = [
+  { match: /^claude-fable-5/, mode: "default" },
+  { match: /^claude-opus-5/, mode: "default" },
+  { match: /^claude-opus-4-6/, mode: "default" },
+  { match: /^claude-opus-4-[78]/, mode: "fixed" },
+  { match: /^claude-sonnet-(5|4-6)/, mode: "optional" },
+];
+
+export function modelNameFromId(id: string | undefined): string | undefined {
+  const match = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(?:\[1m\])?$/i.exec(id?.trim() ?? "");
+  if (!match) return undefined;
+  const family = match[1];
+  if (!family) return undefined;
+  return `${family.charAt(0).toUpperCase()}${family.slice(1).toLowerCase()} ${match[2]}${match[3] ? `.${match[3]}` : ""}`;
 }
 
-export const CLAUDE_CODE_MODELS: ClaudeModel[] = buildCatalog();
+/** The CLI's default/alias rows are deduped under their concrete ids. */
+export function modelsFromSdk(rows: SdkModelRow[]): ClaudeModel[] {
+  const out: ClaudeModel[] = [];
+  for (const row of rows) {
+    const value = row.value?.trim();
+    if (!value || value === "default") continue;
+    const base = (row.resolvedModel || value).replace(/\[1m\]$/i, "");
+    const name = modelNameFromId(base) ?? row.displayName?.trim() ?? base;
+    const efforts = (row.supportedEffortLevels ?? []).filter(isClaudeEffort);
+    const rule = /\[1m\]$/i.test(value)
+      ? { mode: "default" as const }
+      : ONE_M_FAMILIES.find((family) => family.match.test(base));
+    if (rule?.mode === "default") {
+      out.push(model(`${base}[1m]`, name, LIMIT_1M, efforts));
+    } else if (rule?.mode === "fixed") {
+      out.push(model(base, name, LIMIT_1M, efforts));
+    } else if (rule?.mode === "optional") {
+      out.push(model(base, name, LIMIT_200K, efforts));
+      out.push(model(`${base}[1m]`, `${name} (1M)`, LIMIT_1M, efforts));
+    } else {
+      out.push(model(base, name, LIMIT_200K, efforts));
+    }
+  }
+  const seen = new Set<string>();
+  return out.filter((entry) => !seen.has(entry.id) && seen.add(entry.id));
+}
+
+const cachedModelSchema = z.object({
+  id: z.string(), name: z.string(), reasoning: z.boolean(),
+  contextWindow: z.number(), maxTokens: z.number(),
+  inputWindow: z.number().optional(),
+  efforts: z.array(z.enum(EFFORT_LEVELS)),
+});
+
+function modelCachePath(): string {
+  const base = process.env.XDG_DATA_HOME || join(homedir(), ".local", "share");
+  return join(base, "opencode-claude", "models.json");
+}
+
+function readCachedModels(): ClaudeModel[] | null {
+  try {
+    const parsed = z.array(cachedModelSchema).safeParse(JSON.parse(readFileSync(modelCachePath(), "utf8")));
+    return parsed.success && parsed.data.length ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+let discovered: ClaudeModel[] | null = readCachedModels();
+let lastModelRefresh = 0;
 
 export function getClaudeModels(): ClaudeModel[] {
-  return CLAUDE_CODE_MODELS;
+  return discovered?.length ? discovered : FALLBACK_MODELS;
+}
+
+export function setDiscoveredModels(models: ClaudeModel[]): boolean {
+  if (!models.length) return false;
+  const changed = JSON.stringify(models) !== JSON.stringify(discovered);
+  discovered = models;
+  if (changed) {
+    try {
+      const file = modelCachePath();
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(models, null, 2));
+    } catch {
+      // Cache is optional; the current process still uses discovery.
+    }
+  }
+  return changed;
+}
+
+/** Single throttle shared by V1 and V2; the caller schedules this in the background. */
+export async function refreshClaudeModels(
+  list: () => Promise<SdkModelRow[] | null>,
+  now = Date.now(),
+): Promise<boolean> {
+  if (now - lastModelRefresh < MODEL_REFRESH_INTERVAL_MS) return false;
+  lastModelRefresh = now;
+  const rows = await list();
+  return rows?.length ? setDiscoveredModels(modelsFromSdk(rows)) : false;
 }
 
 export function resolveClaudeModelId(modelId: string): string {
-  const match = CLAUDE_CODE_MODELS.find((m) => m.id === modelId);
-  if (!match) return modelId;
-  return match.resolvedId || match.id;
+  // OpenCode title/summary requests still address Haiku by its short id;
+  // supportedModels() may return only a dated concrete Haiku id.
+  if (modelId === "claude-haiku-4-5") {
+    return getClaudeModels().find((entry) => entry.id === modelId || entry.id.startsWith(`${modelId}-`))?.id ?? modelId;
+  }
+  return modelId;
 }
 
-/**
- * Runtime variants for the provider.models() hook.
- * Keys are OpenCode UI choices; values carry the effort level for chat.headers.
- */
 export function buildEffortVariants(
   model: ClaudeModel,
 ): Record<string, { effort: ClaudeEffort } | { disabled: true }> {
-  if (!model.reasoning) return {};
-  const variants: Record<
-    string,
-    { effort: ClaudeEffort } | { disabled: true }
-  > = Object.fromEntries(EFFORT_LEVELS.map((effort) => [effort, { effort }]));
+  const variants: Record<string, { effort: ClaudeEffort } | { disabled: true }> =
+    Object.fromEntries(model.efforts.map((effort) => [effort, { effort }]));
   for (const key of GENERATED_VARIANT_KEYS) {
     if (!(key in variants)) variants[key] = { disabled: true };
   }
   return variants;
 }
 
-/**
- * Static config variants. Same effort map; OpenCode merges these into the menu.
- * Mark config model `reasoning: false` so OpenCode does not prepend its own
- * generic low/medium/high ahead of this map.
- */
 export function buildConfigVariants(
   model: ClaudeModel,
 ): Record<string, { effort: ClaudeEffort } | { disabled: true }> {

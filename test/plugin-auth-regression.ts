@@ -242,6 +242,11 @@ async function v1RequestsCarryProxyToken() {
   process.env.OPENCODE_CLAUDE_RATE_LIMIT_STORE = join(dataDir, "rate-limit.json");
   // Loaded after the env overrides: the proxy resolves its data dir on load.
   const { ClaudeCodePlugin } = await import("../src/index.ts");
+  const { refreshClaudeModels } = await import("../src/models.ts");
+  await refreshClaudeModels(async () => [
+    { value: "sonnet", resolvedModel: "claude-sonnet-5-5", supportedEffortLevels: ["high"] },
+    { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", supportedEffortLevels: [] },
+  ]);
   const { PROVIDER_ID, PROXY_TOKEN_HEADER } = await import("../src/constants.ts");
   const { getProxyAuthToken, stopProxy } = await import("../src/proxy.ts");
   try {
@@ -254,6 +259,13 @@ async function v1RequestsCarryProxyToken() {
     };
     await hooks.config!(config as never);
     assert.equal(config.provider[PROVIDER_ID]!.options.apiKey, token);
+    assert.ok(config.provider[PROVIDER_ID]!.models["claude-sonnet-5-5[1m]"]);
+    assert.ok(config.provider[PROVIDER_ID]!.models["claude-haiku-4-5-20251001"]);
+    assert.equal(config.provider[PROVIDER_ID]!.models["claude-haiku-4-5-20251001"].variants.high.disabled, true);
+    assert.equal(config.provider[PROVIDER_ID]!.models.sonnet, undefined);
+    const providerModels = await hooks.provider!.models!({} as never);
+    assert.ok(providerModels["claude-sonnet-5-5[1m]"]);
+    assert.equal(providerModels["claude-sonnet-5-5[1m]"].limit.input, 900_000);
 
     const output = { headers: {} as Record<string, string> };
     await hooks["chat.headers"]!(

@@ -14,7 +14,6 @@ import {
 import {
   DIRECTORY_HEADER,
   EFFORT_HEADER,
-  EFFORT_LEVELS,
   PROVIDER_ID,
   PROXY_TOKEN_HEADER,
   REQUEST_KIND_HEADER,
@@ -28,7 +27,8 @@ import {
   encodeClaudeModelSelection,
   resolveClaudeModelSelection,
 } from "./model-selection.js";
-import { getClaudeModels } from "./models.js";
+import { getClaudeModels, refreshClaudeModels, type ClaudeModel } from "./models.js";
+import { listClaudeSupportedModels } from "./query.js";
 import {
   acquireProxy,
   getClaudeProxyBaseUrl,
@@ -83,13 +83,7 @@ async function authorizeWithClaudeCli() {
   };
 }
 
-function toModelInfo(definition: {
-  id: string;
-  name: string;
-  contextWindow: number;
-  maxTokens: number;
-  inputWindow?: number;
-}): Model.Info {
+function toModelInfo(definition: ClaudeModel): Model.Info {
   return {
     id: Model.ID.make(definition.id),
     modelID: Model.ID.make(definition.id),
@@ -100,7 +94,7 @@ function toModelInfo(definition: {
       input: ["text", "image", "pdf"],
       output: ["text"],
     },
-    variants: EFFORT_LEVELS.map((effort) => ({
+    variants: definition.efforts.map((effort) => ({
       id: Model.VariantID.make(effort),
     })),
     time: { released: 0 },
@@ -138,6 +132,11 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
         models: getClaudeModels().map(toModelInfo),
       });
     });
+    void refreshClaudeModels(listClaudeSupportedModels)
+      .then(async (changed) => { if (changed) await ctx.provider.reload(); })
+      .catch((error: unknown) =>
+        log.warn("[opencode-claude] could not read the model list from Claude Code", error),
+      );
 
     await ctx.integration.transform((editor) => {
       editor.update(PROVIDER_ID, (integration) => {

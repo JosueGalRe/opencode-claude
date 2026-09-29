@@ -26,7 +26,11 @@ async function main() {
   const { decodeClaudeModelSelection } = await import(
     "../src/model-selection.ts"
   );
-  const { getClaudeModels } = await import("../src/models.ts");
+  const { getClaudeModels, refreshClaudeModels } = await import("../src/models.ts");
+  await refreshClaudeModels(async () => [
+    { value: "sonnet", resolvedModel: "claude-sonnet-5-5", supportedEffortLevels: ["low", "high"] },
+    { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", supportedEffortLevels: [] },
+  ]);
   const { getClaudeProxyBaseUrl, getProxyAuthToken, getProxyPort } =
     await import("../src/proxy.ts");
   const plugin = (await import("../src/index.ts")).default;
@@ -145,7 +149,7 @@ async function main() {
 
     const models = added!.models;
     assert.equal(models.length, getClaudeModels().length);
-    const sonnet = models.find((m) => m.id === "sonnet");
+    const sonnet = models.find((m) => m.id === "claude-sonnet-5-5[1m]");
     assert.ok(sonnet);
     assert.equal(sonnet.limit.input, 900_000);
     assert.equal(sonnet.limit.output, 128_000);
@@ -155,8 +159,9 @@ async function main() {
     );
     assert.deepEqual(
       sonnet.variants.map((v: { id: string }) => v.id),
-      ["low", "medium", "high", "xhigh", "max"],
+      ["low", "high"],
     );
+    assert.deepEqual(models.find((m) => m.id === "claude-haiku-4-5-20251001")?.variants, []);
 
     assert.ok(methodRegistration, "integration method registered");
     assert.equal(methodRegistration.integrationID, PROVIDER_ID);
