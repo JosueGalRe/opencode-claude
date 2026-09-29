@@ -15,8 +15,29 @@
   dependencies, so copied alone into `~/.config/opencode/plugins/` it loads
   without the checkout or `node_modules` (verified on V2 2.0.15, down to a
   live turn; V1 untested).
+- **Models discovered from Claude Code** — the list comes from the CLI's
+  `supportedModels()`, read through an idle SDK query that sends no prompt.
+  It is cached in `~/.local/share/opencode-claude/models.json` and refreshed
+  in the background at most every 10 minutes; V2 reloads the provider when
+  it changes. A built-in list covers the time before the first answer and a
+  missing CLI (ported from upstream 1.0–1.2).
+- **`OPENCODE_CLAUDE_STOP_GRACE_MS`** — time an interrupted turn gets to
+  record its interruption before its process is closed (default `2000`, `0`
+  closes immediately) (ported from upstream 1.3.0).
 
 ### Changed
+
+- **Model ids changed: pick your model again** — the aliases (`sonnet`,
+  `opus`, `fable`, `haiku`) and the pinned ids without a suffix
+  (`claude-opus-5-5`, `claude-fable-5-1`) are gone. Models are now concrete
+  ids, with `[1m]` where Claude Code needs it for the 1M window
+  (`claude-opus-5-5[1m]`, `claude-fable-5-1[1m]`). Configs, agents and saved
+  sessions that name an old id must be re-pointed once. Names are derived
+  from the id, and each model offers only the effort variants the CLI
+  reports for it (ported from upstream 1.0–1.2).
+- **`OPENCODE_CLAUDE_HOST_TRANSCRIPT=0` disables only content-divergence
+  detection** — it used to mean "always resume". Reverts, edits and pinned
+  resume stay active with it off (ported from upstream 1.3.0).
 
 - **`dist/` is a single self-contained `index.js`** — `bun build` replaces
   tsc's per-module output and inlines the npm dependencies (~3 MB); `tsc`
@@ -67,6 +88,39 @@
 
 ### Fixes
 
+- **Sonnet context window** — `claude-sonnet-5-5` and `claude-sonnet-4-6`
+  were declared 1M but run at 200k, so OpenCode compacted too late. The
+  plain ids now declare 200k, and `claude-sonnet-5-5[1m]` /
+  `claude-sonnet-4-6[1m]` are separate choices (ported from upstream
+  1.0–1.2).
+- **Real turn errors** — a failed turn reported "Claude turn failed"; it now
+  carries Claude Code's own error text. Context overflow returns 400
+  (`context_length_exceeded`) so OpenCode compacts instead of retrying, and
+  image errors are not retried either (ported from upstream 1.3.0).
+- **Finish reasons** — Claude's `max_tokens` and `refusal` stop reasons map
+  to `finish_reason` `length` and `content_filter`. A refusal's explanation
+  and the CLI's warnings appear in the reasoning (ported from upstream
+  1.3.0).
+- **Overload reported as success** — when Claude Code exhausts its retries
+  on an overloaded API, the turn returns 503 instead of a successful reply
+  (ported from upstream 1.3.0).
+- **API retries** — the CLI's retries and their delays are shown in the
+  reasoning, and a long retry pause no longer trips the stall watchdog
+  (ported from upstream 1.3.0).
+- **Extra-usage and credit errors** — "Third-party apps now draw from extra
+  usage" and low-credit errors return 402 and are not retried (ported from
+  upstream 1.3.0).
+- **Resume pinned to the main chain** — a session resumes at its last
+  main-chain leaf (`resumeSessionAt`), and an earlier turn still running for
+  the same chat is stopped before the new one starts (ported from upstream
+  1.3.0).
+- **Graceful stop** — superseded, stopped and reaped turns are interrupted,
+  left to settle, then closed, so the interruption is recorded in the
+  session; the next turn waits for that stop (ported from upstream 1.3.0).
+- **Reverts and edits** — they resume natively at the earlier leaf instead
+  of resending the history as text (ported from upstream 1.3.0).
+- **Session store writes** — `sessions.json` is written only when a binding
+  changes (ported from upstream 1.3.0).
 - **Code Mode catalog on V2** — dropping the stock system prompt also hid
   the `execute` tool's MCP and OpenChamber namespaces, leaving Claude unable
   to discover them. Forward only its catalog when `execute` is bridged, not

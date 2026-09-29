@@ -13,11 +13,11 @@ The full list is in [CHANGELOG.md](CHANGELOG.md) under *Unreleased*. The highlig
 - **Native OpenCode V2 plugin.** A `Plugin.define` entry registers the `claude-code` provider, its model catalog and a *Sign in with Claude Code CLI* integration. Its `model.request` hook tags every request with the session, project directory, effort variant and request kind. V2 loads the checkout directory directly and reloads it on its own when `dist/` changes.
 - **OpenCode's tools, faithfully.** Tools are bridged with their full parameter schemas. Read-only tools are marked `readOnlyHint`. All calls from one message reach OpenCode in a single `tool_calls` response, so subagents launched together run in parallel. A message you send mid-turn is delivered with the next tool result, and Claude is told how to use V2's code-mode `execute` tool.
 - **Your agent's prompt reaches Claude, without OpenCode's boilerplate.** Custom agent prompts, `Instructions from:` files, MCP notes and the skills list are appended to the Claude Code system prompt. OpenCode's stock base prompt and its `# Your Model` / `<env>` sections are dropped: when they reach the request, Anthropic treats it as a third-party app and rejects it (`400 Third-party apps now draw from your extra usage`).
-- **Sessions that hold up.** Each OpenCode session is bound to one Claude session and resumes it. If the host rewrites the history (compaction, pruning plugins) or another provider answered some turns, the stale Claude session is dropped and the turn is rebuilt from the host's history. Every message queued since the last reply is sent, not just the newest. A turn waiting on tool results is closed after an hour instead of leaking a CLI process.
+- **Sessions that hold up.** Each OpenCode session is bound to one Claude session and resumes it. If the host rewrites the history (compaction, pruning plugins) or another provider answered some turns, the stale Claude session is dropped and the turn is rebuilt from the host's history. A revert or an edit resumes the Claude session at the earlier point instead of resending the history as text. Every message queued since the last reply is sent, not just the newest. A new turn first stops an earlier one still running for the same chat. A turn waiting on tool results is closed after an hour instead of leaking a CLI process.
 - **Compaction and titles on V2.** Requests are routed by V2's request kind, not by prompt wording. A compaction sent while a turn is waiting on a tool call runs as a one-shot, tool-less summary instead of replaying that tool call.
-- **Real HTTP errors.** An API error that arrives before any output returns a real HTTP status, keeping Anthropic's own 4xx, instead of a 200 whose only text is the error. Before, only rate limits got a real status. The rate-limit gate parses dated weekly resets and no longer blocks turns until the reset of an unrelated limit.
+- **Real HTTP errors.** An API error that arrives before any output returns a real HTTP status, keeping Anthropic's own 4xx, instead of a 200 whose only text is the error. Before, only rate limits got a real status. Errors carry Claude Code's own text; context overflow returns 400 so OpenCode compacts instead of retrying, and extra-usage or credit errors return 402. The rate-limit gate parses dated weekly resets and no longer blocks turns until the reset of an unrelated limit.
 - **Hardening.** The proxy requires a per-process secret and rejects requests sent from a browser page. Claude Code's built-in tools are never enabled, so every tool call goes through OpenCode's permission rules. The CLI installer no longer pipes `curl` into `bash`.
-- **Models and usage.** Pinned Fable 5.1 and Opus 5.5. 1M-context models declare a 900k input window, so OpenCode auto-compacts before hitting the limit. Token usage is reported per turn, with the final completion count.
+- **Models and usage.** The model list comes from your Claude Code CLI, with effort variants only where the model supports them. 1M-context models declare a 900k input window, so OpenCode auto-compacts before hitting the limit. Token usage is reported per turn, with the final completion count.
 
 ## Requirements
 
@@ -86,18 +86,25 @@ The plugin doesn't implement OAuth, read Claude's credential files, inject token
 Choose provider **Claude Code**, a model, and an effort variant. From the V1 CLI:
 
 ```bash
-opencode run "Summarise this repository in five bullets." --model claude-code/sonnet
+opencode run "Summarise this repository in five bullets." --model claude-code/claude-sonnet-5-5
 ```
 
 ## Models and effort
 
-| Model id | Name | Context |
-| --- | --- | --- |
-| `fable` · `opus` · `sonnet` | Fable 5 · Opus 5 · Sonnet 5 (aliases; the CLI picks the concrete model) | 1M |
-| `haiku` | Haiku 4.5 | 200k |
-| `claude-fable-5-1` · `claude-opus-5-5` · `claude-sonnet-5-5` · `claude-opus-4-8` · `claude-sonnet-4-6` | Pinned versions | 1M |
+The model list is not hardcoded: the plugin asks the CLI (`supportedModels()`), caches the answer in `models.json` in the state directory, and refreshes it in the background at most every 10 minutes. Until the first answer arrives, or when the CLI is unavailable, a short built-in list is used.
 
-The effort variants `low` · `medium` · `high` · `xhigh` · `max` map to Claude Code's `--effort` with adaptive thinking. Title and summary requests run without effort or thinking.
+Ids are concrete Claude Code model ids; names are derived from the id. A `[1m]` suffix selects the 1M context window:
+
+| Id shape | Example | Context |
+| --- | --- | --- |
+| Only offered with 1M | `claude-opus-5-5[1m]` · `claude-fable-5-1[1m]` | 1M |
+| Plain and `[1m]`, as separate choices | `claude-sonnet-5-5` · `claude-sonnet-5-5[1m]` | 200k · 1M |
+| Plain id that already runs at 1M | `claude-opus-4-8` | 1M |
+| Everything else | `claude-haiku-4-5-20251001` | 200k |
+
+The aliases (`sonnet`, `opus`, `fable`, `haiku`) and the old pinned ids without the suffix (`claude-opus-5-5`, `claude-fable-5-1`) are no longer listed. If your config or a saved session points at one, pick the model again.
+
+The effort variants `low` · `medium` · `high` · `xhigh` · `max` map to Claude Code's `--effort` with adaptive thinking. Each model offers only the levels the CLI reports for it. Title and summary requests run without effort or thinking.
 
 ## How it works
 
@@ -110,13 +117,14 @@ OpenCode ──POST /v1/chat/completions──▶ local proxy (Bun.serve on 127.
 
 - **Provider.** OpenCode sees an OpenAI-compatible provider. The proxy binds an ephemeral port that the plugin publishes to OpenCode, and the plugin adds the proxy secret to every request.
 - **Tools.** OpenCode's tools are exposed to Claude as an in-process MCP server. When Claude calls one, the proxy pauses the turn ("parks" it) and answers OpenCode with `tool_calls`. OpenCode runs the tool under its own permissions, and the next request carries the results, which resume the paused turn.
-- **Sessions.** Session bindings are stored in `sessions.json`. When a Claude session can't be resumed, or no longer matches the host's history, the prior conversation is serialized into the prompt (newest first, within a character budget) so Claude doesn't start without context.
+- **Sessions.** Session bindings are stored in `sessions.json`, written only when a binding changes. Resume is pinned to the last entry of the session's main chain (`resumeSessionAt`), and a revert or edit resumes at the earlier entry. When a Claude session can't be resumed, or no longer matches the host's history, the prior conversation is serialized into the prompt (newest first, within a character budget) so Claude doesn't start without context.
 - **Titles and compaction.** These run as single-turn, tool-less requests that don't create or resume sessions. A compaction also closes any turn that is waiting on a tool call, and the next normal turn rebuilds from the compacted history.
-- **Failures.** If a turn fails before any output, the response is 401 (auth), 429 with `Retry-After` (subscription limit), Anthropic's 4xx (request refused) or 500. If it fails after output has started, the error is appended to the stream as `[claude-code error] …`. A rate limit hit mid-turn goes out as a retryable stream error, so OpenCode waits for the reset and retries. A turn that goes silent for 10 minutes is killed.
+- **Failures.** If a turn fails before any output, the response is 401 (auth), 429 with `Retry-After` (subscription limit), Anthropic's 4xx (request refused), 400 (context overflow, image errors), 402 (extra usage or credit), 503 (overload) or 500, with Claude Code's own error text. If it fails after output has started, the error is appended to the stream as `[claude-code error] …`. A rate limit hit mid-turn goes out as a retryable stream error, so OpenCode waits for the reset and retries. The CLI's API retries are shown in the reasoning, and their pauses don't count as silence. A turn that goes silent for 10 minutes is killed.
 
 State lives in `$XDG_DATA_HOME/opencode-claude/` (default `~/.local/share/opencode-claude/`):
 - `sessions.json`: session bindings.
 - `rate-limit.json`: limit state.
+- `models.json`: the model list last read from the CLI.
 - `proxy-token`: only with a pinned port.
 - `debug.log`.
 
