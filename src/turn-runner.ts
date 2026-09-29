@@ -25,6 +25,15 @@ const PARK_SETTLE_MS = 300;
 
 const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
 
+/** Extra silence the CLI announced for its next API attempt. */
+function apiRetryDelayMs(event: unknown): number {
+  if (!event || typeof event !== "object") return 0;
+  const e = event as Record<string, unknown>;
+  if (e.type !== "system" || e.subtype !== "api_retry") return 0;
+  const delay = Number(e.retry_delay_ms);
+  return Number.isFinite(delay) && delay > 0 ? delay : 0;
+}
+
 /**
  * OpenCode treats a StructuredOutput call as the end of the request and never
  * sends a tool result back, so such a park is closed after this grace period.
@@ -94,6 +103,7 @@ export class TurnRunner {
   private messageOpen = false;
   private messageToolNames: string[] = [];
   private settled = false;
+  private retryWaitMs = 0;
   /** next() in flight when the turn parked; consumed on resume. */
   private pendingNext: Promise<IteratorResult<unknown>> | null = null;
   private reapTimer: ReturnType<typeof setTimeout> | null = null;
@@ -146,6 +156,7 @@ export class TurnRunner {
         if (raced.value.done) break;
         const event = raced.value.value;
         this.trackMessageState(event);
+        this.retryWaitMs = apiRetryDelayMs(event);
         this.options.onEvent?.(event);
         yield event;
       }
@@ -194,7 +205,7 @@ export class TurnRunner {
     });
     let stallTimer: ReturnType<typeof setTimeout> | null = null;
     const stallPromise = new Promise<never>((_, reject) => {
-      const ms = turnStallMs();
+      const ms = turnStallMs() + this.retryWaitMs;
       stallTimer = setTimeout(() => reject(stallError(ms)), ms);
       stallTimer.unref?.();
     });

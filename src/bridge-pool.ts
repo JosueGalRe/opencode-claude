@@ -16,6 +16,7 @@ export type ParkedToolCall = {
 export type ParkedBridge = {
   id: string;
   conversationKey: string;
+  metaKind?: string | null;
   handle: ClaudeQueryHandle;
   pendingTools: Map<string, ParkedToolCall>;
   /** SDK assistant messages whose usage was already reported to OpenCode. */

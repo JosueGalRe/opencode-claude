@@ -34,10 +34,15 @@ import {
 import { buildClaudeCodeChildEnv } from "./auth-env.js";
 import {
   classifyClaudeFailure,
+  failureCodeFor,
   failureHintFor,
   failureStatusFor,
   failureTypeFor,
+  metaFailureText,
+  overloadedResultText,
   rateLimitResponse,
+  resultErrorText,
+  thrownErrorText,
 } from "./failure.js";
 import {
   decodeClaudeModelSelection,
@@ -1103,6 +1108,7 @@ async function handleChatCompletions(
   const bridge: ParkedBridge = {
     id: bridgeId,
     conversationKey,
+    metaKind,
     handle,
     pendingTools: turn.pendingTools,
     seenAssistantUsageIds: new Set(),
@@ -1123,7 +1129,7 @@ async function handleChatCompletions(
     probeTurnEvents(turn.events()),
   );
   if (probe.status === "failed") {
-    return failureResponse(probe.errorText, conversationKey);
+    return failureResponse(probe.errorText, conversationKey, metaKind);
   }
   return streamOpenAIResponse(probe.replay, responseModel, bridge, options);
 }
@@ -1166,6 +1172,7 @@ async function collectTurnResponse(
   let errorText: string | null = null;
   let sawContent = false;
   const toolCalls: ParkedToolCall[] = [];
+  const mapState: MapState = { stopReason: null };
 
   const noteError = (text: string) => {
     const norm = normalizeClaudeErrorText(text);
@@ -1177,7 +1184,7 @@ async function collectTurnResponse(
 
   try {
     for await (const event of events) {
-      const mapped = mapSdkEvent(event);
+      const mapped = mapSdkEvent(event, mapState);
       if (mapped.kind === "park") {
         toolCalls.push(...mapped.tools);
         sawContent = true;
@@ -1201,10 +1208,12 @@ async function collectTurnResponse(
       }
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    recordRateLimitErrorText(message);
-    forgetDeadSession(bridge.conversationKey, message);
-    noteError(message);
+    const message = thrownErrorText(err) ?? (errorText ? null : "Claude turn failed");
+    if (message) {
+      recordRateLimitErrorText(message);
+      forgetDeadSession(bridge.conversationKey, message);
+      noteError(message);
+    }
   }
 
   const usage = turnUsage.resolve();
@@ -1212,12 +1221,13 @@ async function collectTurnResponse(
   // Buffered responses have not committed HTTP headers yet. Even if an agent
   // produced partial work first, preserve the real 429 so OpenCode starts its
   // retry countdown instead of treating the run as a successful answer.
-  if (
-    errorText &&
-    (!sawContent || classifyClaudeFailure(errorText) === "rate_limit")
-  ) {
-    return failureResponse(errorText, bridge.conversationKey);
+  const failureKind = errorText ? classifyClaudeFailure(errorText) : null;
+  if (errorText && (!sawContent || failureKind === "rate_limit" || failureKind === "context_overflow")) {
+    return failureResponse(mapState.refusalText ?? errorText, bridge.conversationKey, bridge.metaKind);
   }
+
+  const finishReason = toolCalls.length ? "tool_calls" : errorText ? "stop" : finishReasonFor(mapState.stopReason);
+  if (finishReason === "content_filter" && !suppressReasoning) reasoning += refusalNote(mapState) ?? "";
 
   return Response.json({
     id: completionId,
@@ -1241,7 +1251,7 @@ async function collectTurnResponse(
               }
             : {}),
         },
-        finish_reason: toolCalls.length ? "tool_calls" : "stop",
+        finish_reason: finishReason,
       },
     ],
     ...(usage ? { usage } : {}),
@@ -1265,7 +1275,7 @@ function rawProbeKind(event: unknown): "content" | "error" | "neutral" {
   if (e.type === "assistant") {
     return assistantErrorText(e) ? "error" : "content";
   }
-  if (e.type === "result") return e.is_error ? "error" : "content";
+  if (e.type === "result") return e.is_error || overloadedResultText(e) ? "error" : "content";
   if (e.type === "stream_event" && e.event && typeof e.event === "object") {
     const ev = e.event as Record<string, unknown>;
     if (
@@ -1302,9 +1312,7 @@ function rawErrorText(event: unknown): string {
   const e = (event ?? {}) as Record<string, unknown>;
   const assistantText = assistantErrorText(e);
   if (assistantText) return assistantText;
-  if (typeof e.result === "string" && e.result) return e.result;
-  if (typeof e.error === "string" && e.error) return e.error;
-  return "Claude turn failed";
+  return overloadedResultText(e) ?? resultErrorText(e);
 }
 
 async function* chainBuffered(
@@ -1332,18 +1340,23 @@ async function probeTurnEvents(
 ): Promise<TurnProbe> {
   const iterator = events[Symbol.asyncIterator]();
   const buffered: unknown[] = [];
+  let refusal: string | null = null;
   const fail = async (errorText: string): Promise<TurnProbe> => {
     try {
       await iterator.return?.(undefined as never);
     } catch {
       // ignore
     }
-    return { status: "failed", errorText };
+    return { status: "failed", errorText: refusal ?? errorText };
   };
   try {
     while (true) {
       const next = await iterator.next();
       if (next.done) break;
+      const raw = next.value as Record<string, unknown> | null;
+      if (raw?.type === "system" && raw.subtype === "model_refusal_no_fallback") {
+        refusal = refusalText(raw);
+      }
       const kind = rawProbeKind(next.value);
       if (kind === "error") {
         return fail(rawErrorText(next.value));
@@ -1354,7 +1367,7 @@ async function probeTurnEvents(
       }
     }
   } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err));
+    return fail(thrownErrorText(err) ?? "Claude turn failed");
   }
   return fail("Claude Code ended the turn without any output");
 }
@@ -1365,9 +1378,11 @@ async function probeTurnEvents(
  * follow-up requests get a cheap 429 without spawning a doomed CLI turn.
  */
 function failureResponse(
-  errorText: string,
+  rawErrorText: string,
   conversationKey: string,
+  metaKind?: string | null,
 ): Response {
+  const errorText = metaFailureText(rawErrorText, metaKind);
   recordRateLimitErrorText(errorText);
   forgetDeadSession(conversationKey, errorText);
   const kind = classifyClaudeFailure(errorText);
@@ -1393,8 +1408,8 @@ function failureResponse(
     return rateLimitResponse(message, retryAfterSeconds, snap.resetsAt);
   }
 
-  // Anthropic refused the request itself (e.g. 400 "Third-party apps…"):
-  // keep its 4xx; a retry sends the same request and fails the same way.
+  // Other Anthropic 4xx responses retain their status; known billing,
+  // refusal and image errors have already been classified above.
   const apiStatus = Number(/\bAPI Error: (4\d\d)\b/.exec(errorText)?.[1]);
   const refused =
     kind === "unknown" && apiStatus !== 429 ? apiStatus || null : null;
@@ -1404,7 +1419,7 @@ function failureResponse(
       error: {
         message: hint ? `${errorText} ${hint}` : errorText,
         type: refused ? "invalid_request_error" : failureTypeFor(kind),
-        code: kind === "auth" ? "claude_auth" : "claude_turn_failed",
+        code: failureCodeFor(kind),
       },
     },
     { status: refused ?? failureStatusFor(kind) },
@@ -1463,6 +1478,7 @@ function streamOpenAIResponse(
       });
 
       let finishReason: string | null = "stop";
+      const mapState: MapState = { stopReason: null };
       const turnUsage = new TurnUsage(bridge.seenAssistantUsageIds);
       let lastErrorNorm: string | null = null;
       const sendError = (text: string) => {
@@ -1508,7 +1524,7 @@ function streamOpenAIResponse(
 
       try {
         for await (const event of events) {
-          const mapped = mapSdkEvent(event);
+          const mapped = mapSdkEvent(event, mapState);
           if (mapped.kind === "park") {
             finishReason = "tool_calls";
             for (let i = 0; i < mapped.tools.length; i++) {
@@ -1600,20 +1616,35 @@ function streamOpenAIResponse(
           }
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
         // A limit/result failure typically arrives here right after the SDK
         // emitted the same text as a result event — dedupe via sendError.
-        recordRateLimitErrorText(message);
-        forgetDeadSession(bridge.conversationKey, message);
-        log.warn("[opencode-claude] stream iterator failed", {
-          conversationKey: bridge.conversationKey,
-          kind: classifyClaudeFailure(message),
-          message: message.slice(0, 300),
-        });
-        sendError(message);
+        const message = thrownErrorText(err) ?? (lastErrorNorm ? null : "Claude turn failed");
+        if (message) {
+          recordRateLimitErrorText(message);
+          forgetDeadSession(bridge.conversationKey, message);
+          log.warn("[opencode-claude] stream iterator failed", {
+            conversationKey: bridge.conversationKey,
+            kind: classifyClaudeFailure(message),
+            message: message.slice(0, 300),
+          });
+          sendError(message);
+        }
         finishReason = "stop";
       }
 
+      if (finishReason === "stop" && !lastErrorNorm) {
+        finishReason = finishReasonFor(mapState.stopReason);
+        const note = finishReason === "content_filter" ? refusalNote(mapState) : null;
+        if (note && !suppressReasoning) {
+          send({
+            id: completionId,
+            object: "chat.completion.chunk",
+            created,
+            model,
+            choices: [{ index: 0, delta: { reasoning_content: note }, finish_reason: null }],
+          });
+        }
+      }
       const usage = turnUsage.resolve();
       if (!streamClosed) {
         send({
@@ -1703,6 +1734,64 @@ function forgetDeadSession(conversationKey: string, errorText: string): void {
   clearForeignSessionId(conversationKey);
 }
 
+type MapState = {
+  stopReason: string | null;
+  refusalNoted?: boolean;
+  refusalText?: string;
+  shownNotices?: Set<string>;
+  producedContent?: boolean;
+};
+
+export function finishReasonFor(stopReason: string | null | undefined): string {
+  if (stopReason === "max_tokens") return "length";
+  if (stopReason === "refusal") return "content_filter";
+  return "stop";
+}
+
+function refusalNote(state: MapState): string | null {
+  if (state.stopReason !== "refusal" || state.refusalNoted) return null;
+  state.refusalNoted = true;
+  return "\n[refusal] Claude declined to answer this request.\n";
+}
+
+export function refusalText(event: Record<string, unknown>): string {
+  const explanation = typeof event.api_refusal_explanation === "string" ? event.api_refusal_explanation.trim() : "";
+  const content = typeof event.content === "string" ? event.content.trim() : "";
+  const category = typeof event.api_refusal_category === "string" ? ` (${event.api_refusal_category})` : "";
+  const why = explanation || content;
+  return `Claude declined this request${category}${why ? `: ${why}` : "."}`;
+}
+
+function cliNotice(event: Record<string, unknown>, state?: MapState): string | null {
+  let key: string | null = null;
+  let text: string | null = null;
+  if (event.subtype === "notification" && (event.priority === "high" || event.priority === "immediate") && typeof event.text === "string" && event.text.trim()) {
+    text = event.text.trim();
+    key = `notification:${typeof event.key === "string" ? event.key : text}`;
+  } else if (event.subtype === "informational" && event.level === "warning" && typeof event.content === "string" && event.content.trim()) {
+    text = event.content.trim();
+    key = `informational:${text}`;
+  }
+  if (!key || !text) return null;
+  if (state) {
+    state.shownNotices ??= new Set();
+    if (state.shownNotices.has(key)) return null;
+    state.shownNotices.add(key);
+  }
+  return `\n[claude-code] ${text}\n`;
+}
+
+export function apiRetryNote(event: Record<string, unknown>): string {
+  const status = typeof event.error_status === "number" ? event.error_status : null;
+  const what = status ? `Anthropic returned ${status}` : "Connection to Anthropic failed";
+  const delay = Number(event.retry_delay_ms);
+  const wait = Number.isFinite(delay) && delay >= 1000 ? ` in ${Math.round(delay / 1000)}s` : "";
+  const attempt = Number(event.attempt);
+  const max = Number(event.max_retries);
+  const count = Number.isFinite(attempt) && Number.isFinite(max) && max > 0 ? ` (attempt ${attempt}/${max})` : "";
+  return `\n[api] ${what}, retrying${wait}${count}\n`;
+}
+
 /**
  * Map Claude Agent SDK events to OpenAI-style deltas.
  *
@@ -1710,11 +1799,12 @@ function forgetDeadSession(conversationKey: string, errorText: string): void {
  * `assistant` message payloads repeat the same content after partials and
  * would double-print if both were forwarded.
  */
-function mapSdkEvent(event: unknown): MappedEvent {
+function mapSdkEvent(event: unknown, state?: MapState): MappedEvent {
   if (!event || typeof event !== "object") return { kind: "ignore" };
   const e = event as Record<string, unknown>;
 
   if (e.type === "__park__" && Array.isArray(e.tools)) {
+    if (state) state.producedContent = true;
     return { kind: "park", tools: e.tools as ParkedToolCall[] };
   }
 
@@ -1730,6 +1820,24 @@ function mapSdkEvent(event: unknown): MappedEvent {
     const state = recordRateLimitInfo(rawInfo);
     const note = maybeRateLimitNote(state, rawInfo);
     return note ? { kind: "reasoning", text: note } : { kind: "ignore" };
+  }
+
+  if (e.type === "system" && e.subtype === "api_retry") {
+    return { kind: "reasoning", text: apiRetryNote(e) };
+  }
+
+  if (e.type === "system" && e.subtype === "model_refusal_no_fallback") {
+    const text = refusalText(e);
+    if (state) {
+      state.refusalNoted = true;
+      state.refusalText = text;
+    }
+    return { kind: "reasoning", text: `\n[refusal] ${text}\n` };
+  }
+
+  if (e.type === "system") {
+    const notice = cliNotice(e, state);
+    if (notice) return { kind: "reasoning", text: notice };
   }
 
   if (e.type === "system" && e.subtype === "model_refusal_fallback") {
@@ -1759,14 +1867,22 @@ function mapSdkEvent(event: unknown): MappedEvent {
 
   // stream_event / partial message deltas (authoritative while streaming)
   if (e.type === "stream_event" && e.event && typeof e.event === "object") {
+    const ev = e.event as Record<string, unknown>;
+    if (ev.type === "message_delta" && state && !e.parent_tool_use_id) {
+      const delta = ev.delta;
+      if (delta && typeof delta === "object") {
+        const stopReason = (delta as Record<string, unknown>).stop_reason;
+        if (typeof stopReason === "string") state.stopReason = stopReason;
+      }
+    }
     // message_start / message_delta carry each API call's usage; the delta
     // holds the final output_tokens the assistant event does not have yet.
     const streamUsage = usageFromStreamEvent(event);
     if (streamUsage) return { kind: "usage-stream", usage: streamUsage };
-    const ev = e.event as Record<string, unknown>;
     if (ev.type === "content_block_delta" && ev.delta && typeof ev.delta === "object") {
       const delta = ev.delta as Record<string, unknown>;
       if (delta.type === "text_delta" && typeof delta.text === "string") {
+        if (state && delta.text) state.producedContent = true;
         return { kind: "text", text: delta.text };
       }
       if (
@@ -1836,13 +1952,11 @@ function mapSdkEvent(event: unknown): MappedEvent {
             : {}),
         }
       : accountingUsage;
+    if (state && typeof e.stop_reason === "string") state.stopReason = e.stop_reason;
+    const overloaded = overloadedResultText(e);
+    if (overloaded && !state?.producedContent) return { kind: "error", text: overloaded, usage };
     if (e.is_error) {
-      const text =
-        typeof e.result === "string"
-          ? e.result
-          : typeof e.error === "string"
-            ? e.error
-            : "Claude turn failed";
+      const text = resultErrorText(e);
       // Hard subscription limit? Record it so the gate + counter activate.
       const limited = recordRateLimitErrorText(text);
       let note = text;
@@ -1865,6 +1979,7 @@ function mapSdkEvent(event: unknown): MappedEvent {
 
   // Fallback for SDK builds that emit bare text deltas without stream_event
   if (typeof e.text === "string" && e.type === "text_delta") {
+    if (state && e.text) state.producedContent = true;
     return { kind: "text", text: e.text };
   }
 
