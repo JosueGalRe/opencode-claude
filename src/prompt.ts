@@ -2,6 +2,8 @@
  * Build Claude Agent SDK prompts from OpenAI-compatible chat messages,
  * including text, images, and PDF/document attachments.
  */
+import { createHash } from "node:crypto";
+
 export type AnthropicContentBlock =
   | { type: "text"; text: string }
   | {
@@ -399,6 +401,37 @@ export function contentHasAttachments(content: unknown): boolean {
       type === "document"
     );
   });
+}
+
+const SYSTEM_REMINDER_BLOCK = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+
+/** Host-injected reminders move around the user prompt in Plan mode. */
+export function withoutSystemReminders<T extends { role?: string; content?: unknown }>(messages: T[]): T[] {
+  return messages.flatMap((msg) => {
+    if (msg.role !== "user" || !extractTextContent(msg.content).includes("<system-reminder>")) return [msg];
+    const strip = (text: string) => text.includes("<system-reminder>")
+      ? text.replace(SYSTEM_REMINDER_BLOCK, "").trim() : text;
+    const content = typeof msg.content === "string" ? strip(msg.content)
+      : Array.isArray(msg.content) ? msg.content.flatMap((part: unknown) => {
+          if (!part || typeof part !== "object" || !("text" in part) || typeof part.text !== "string") return [part];
+          const text = strip(part.text);
+          return text ? [{ ...part, text }] : [];
+        }) : msg.content;
+    if (!extractTextContent(content).trim() && !contentHasAttachments(content)) return [];
+    return [{ ...msg, content }];
+  });
+}
+
+/** User identities only; tool media, reminders and attachment encoding do not count. */
+export function userHistoryFingerprints(messages: Array<{ role?: string; content?: unknown }>): string[] {
+  const prints: string[] = [];
+  for (const [i, msg] of messages.entries()) {
+    if (msg.role !== "user" || isPromotedToolMedia(msg, messages[i - 1])) continue;
+    const text = extractTextContent(msg.content).replace(SYSTEM_REMINDER_BLOCK, " ").replace(/\s+/g, " ").trim();
+    const identity = text || (contentHasAttachments(msg.content) ? "\u0000attachments" : "");
+    if (identity) prints.push(createHash("sha1").update(identity).digest("hex").slice(0, 16));
+  }
+  return prints;
 }
 
 export function openaiContentToAnthropicBlocks(

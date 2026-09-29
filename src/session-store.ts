@@ -7,9 +7,13 @@
  * the old or the new store, never a truncated one.
  */
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   writeFileSync,
@@ -39,8 +43,25 @@ export type ClaudeSessionBinding = {
    * the first user message of the latest turn delivered to it.
    */
   history?: HistoryFingerprint;
+  /** Last observed main-chain entry, not the last branch written to the file. */
+  leafUuid?: string;
+  turns?: TurnBoundary[];
   updatedAt: number;
 };
+
+export type TurnBoundary = {
+  count: number;
+  hash: string;
+  /** Covers earlier users too, including history imported in a single turn. */
+  prefixHash?: string;
+  leafUuid?: string;
+  /** Content checkpoint for this branch, restored when rewinding. */
+  history?: HistoryFingerprint;
+};
+
+const MAX_TURN_BOUNDARIES = 100;
+const written = new Map<string, ClaudeSessionBinding>();
+const pendingTurns = new Map<string, TurnBoundary[]>();
 
 type Store = Record<string, ClaudeSessionBinding>;
 
@@ -115,24 +136,51 @@ export function getForeignSessionId(
 export function setForeignSessionId(
   conversationKey: string,
   foreignSessionId: string,
-  meta?: { modelId?: string; cwd?: string; history?: HistoryFingerprint },
+  meta?: { modelId?: string; cwd?: string; history?: HistoryFingerprint; leafUuid?: string },
 ): void {
+  const cached = written.get(conversationKey);
+  if (cached && !pendingTurns.has(conversationKey) &&
+      cached.foreignSessionId === foreignSessionId &&
+      cached.modelId === meta?.modelId && cached.cwd === meta?.cwd &&
+      (meta?.leafUuid === undefined || meta.leafUuid === cached.leafUuid) &&
+      (meta?.history === undefined || sameHistory(meta.history, cached.history))) return;
+  let next: ClaudeSessionBinding | undefined;
   updateStore((store) => {
     const previous = store[conversationKey];
-    store[conversationKey] = {
-      ...previous,
+    const sameSession = previous?.foreignSessionId === foreignSessionId;
+    const leafUuid = meta?.leafUuid ?? (sameSession ? previous?.leafUuid : undefined);
+    const last = previous?.turns?.at(-1);
+    const turns = pendingTurns.get(conversationKey) ?? (sameSession
+      ? [...(previous?.turns ?? [])]
+      : last ? [{ ...last, leafUuid: undefined }] : []);
+    const current = turns.at(-1);
+    if (current) turns[turns.length - 1] = { ...current, leafUuid };
+    next = {
       conversationKey,
       foreignSessionId,
       modelId: meta?.modelId,
       cwd: meta?.cwd,
-      history: meta?.history ?? previous?.history,
+      history: meta?.history ?? (sameSession ? previous?.history : undefined),
+      leafUuid,
+      ...(turns.length ? { turns: turns.slice(-MAX_TURN_BOUNDARIES) } : {}),
       updatedAt: Date.now(),
     };
+    if (previous && previous.foreignSessionId === next.foreignSessionId &&
+        previous.modelId === next.modelId && previous.cwd === next.cwd &&
+        previous.leafUuid === next.leafUuid && sameHistory(previous.history, next.history) &&
+        JSON.stringify(previous.turns ?? []) === JSON.stringify(next.turns ?? [])) return false;
+    store[conversationKey] = next;
     return true;
   });
+  if (next) {
+    written.set(conversationKey, next);
+    pendingTurns.delete(conversationKey);
+  }
 }
 
 export function clearForeignSessionId(conversationKey: string): void {
+  written.delete(conversationKey);
+  pendingTurns.delete(conversationKey);
   updateStore((store) => {
     if (!(conversationKey in store)) return false;
     delete store[conversationKey];
@@ -177,7 +225,9 @@ export function setHistoryFingerprint(
   conversationKey: string,
   history: HistoryFingerprint,
 ): void {
+  written.delete(conversationKey);
   updateStore((store) => {
+    if (sameHistory(store[conversationKey]?.history, history)) return false;
     store[conversationKey] = {
       ...store[conversationKey],
       conversationKey,
@@ -186,6 +236,126 @@ export function setHistoryFingerprint(
     };
     return true;
   });
+}
+
+function sameHistory(a: HistoryFingerprint | undefined, b: HistoryFingerprint | undefined): boolean {
+  return a?.count === b?.count && a?.hash === b?.hash;
+}
+
+export function userHistoryBoundary(prints: string[], history?: HistoryFingerprint): TurnBoundary | undefined {
+  const hash = prints.at(-1);
+  return hash ? {
+    count: prints.length, hash,
+    prefixHash: createHash("sha1").update(prints.join("\n")).digest("hex"),
+    history,
+  } : undefined;
+}
+
+export function getSessionLeafUuid(conversationKey: string): string | undefined {
+  return getSessionBinding(conversationKey)?.leafUuid;
+}
+
+export function getSessionTurns(conversationKey: string): TurnBoundary[] {
+  return getSessionBinding(conversationKey)?.turns ?? [];
+}
+
+/** Record the host turn; its leaf follows subsequent main-chain events. */
+export function recordTurnStart(
+  conversationKey: string,
+  boundary: TurnBoundary,
+  before?: TurnBoundary,
+): void {
+  written.delete(conversationKey);
+  updateStore((store) => {
+    const binding = store[conversationKey];
+    const turns = [...(binding?.turns ?? [])];
+    if (binding && turns.length === 0 && before && before.count > 0 && !sameHistory(before, boundary)) {
+      turns.push({ ...before, leafUuid: binding.leafUuid });
+    }
+    const last = turns.at(-1);
+    // The next request supplies the completed previous turn's host output.
+    // Keep that checkpoint with its leaf, so a rewind still detects DCP.
+    if (last && before && sameHistory(last, before)) {
+      turns[turns.length - 1] = { ...last, history: before.history };
+    }
+    if (!sameHistory(last, boundary)) {
+      turns.push({ ...boundary, leafUuid: binding?.leafUuid });
+    }
+    if (!binding) {
+      pendingTurns.set(conversationKey, turns.slice(-MAX_TURN_BOUNDARIES));
+      return false;
+    }
+    if (JSON.stringify(binding.turns ?? []) === JSON.stringify(turns)) return false;
+    store[conversationKey] = { ...binding, turns: turns.slice(-MAX_TURN_BOUNDARIES), updatedAt: Date.now() };
+    return true;
+  });
+}
+
+export function rewindSessionTurns(conversationKey: string, index: number): void {
+  written.delete(conversationKey);
+  updateStore((store) => {
+    const binding = store[conversationKey];
+    const target = binding?.turns?.[index];
+    if (!target || !binding.turns) return false;
+    store[conversationKey] = {
+      ...binding,
+      leafUuid: target.leafUuid,
+      history: target.history,
+      turns: binding.turns.slice(0, index + 1),
+      updatedAt: Date.now(),
+    };
+    return true;
+  });
+}
+
+export type TurnHistoryMatch =
+  | { kind: "untracked" }
+  | { kind: "latest" }
+  | { kind: "rewind"; index: number; leafUuid?: string }
+  | { kind: "diverged" };
+
+export function matchTurnHistory(turns: TurnBoundary[], prints: string[]): TurnHistoryMatch {
+  const latest = turns.at(-1);
+  if (!latest) return { kind: "untracked" };
+  // Check all retained boundaries, not only the last user: editing an
+  // earlier user must still be detected with HOST_TRANSCRIPT=0.
+  const agrees = (count: number) => turns.every((turn) =>
+    turn.count > count || (prints[turn.count - 1] === turn.hash &&
+      (!turn.prefixHash || turn.prefixHash === userHistoryBoundary(prints.slice(0, turn.count))?.prefixHash)));
+  if (prints.length >= latest.count && agrees(latest.count)) return { kind: "latest" };
+  for (let i = turns.length - 2; i >= 0; i--) {
+    const turn = turns[i];
+    if (turn.count === prints.length && agrees(turn.count)) {
+      return { kind: "rewind", index: i, leafUuid: turn.leafUuid };
+    }
+  }
+  return { kind: "diverged" };
+}
+
+/** Search backwards, carrying enough bytes to match across chunk borders. */
+export function sessionFileHasEntry(file: string, uuid: string, chunkBytes = 256 * 1024): boolean {
+  if (!Number.isInteger(chunkBytes) || chunkBytes <= 0) return false;
+  const needle = Buffer.from(`"uuid":${JSON.stringify(uuid)}`);
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    let end = fstatSync(fd).size;
+    let carry = Buffer.alloc(0);
+    while (end > 0) {
+      const start = Math.max(0, end - chunkBytes);
+      const chunk = Buffer.alloc(end - start);
+      const read = readSync(fd, chunk, 0, chunk.length, start);
+      const window = Buffer.concat([chunk.subarray(0, read), carry]);
+      if (window.includes(needle)) return true;
+      carry = window.subarray(0, Math.min(window.length, needle.length - 1));
+      end = start;
+    }
+    return false;
+  } catch {
+    return false; // Missing or unreadable transcript: caller selects the fallback.
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
 }
 
 /**
@@ -211,8 +381,8 @@ export function conversationKeyFromMessages(
 
 /**
  * Locate the Claude Code transcript for a foreign session id. The Agent SDK
- * resumes via the claude CLI, which looks the session up under
- * ~/.claude/projects/<cwd-slug>/ — a missing file means resume silently starts
+ * resumes via the claude CLI, which finds it across project folders even
+ * when the chat's cwd changed. A missing file means resume silently starts
  * (or errors into) a context-free session, so callers must fall back to
  * history injection instead.
  */

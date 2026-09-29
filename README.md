@@ -130,7 +130,8 @@ Set these environment variables for the OpenCode server process:
 | `OPENCODE_CLAUDE_PROXY_PORT` | ephemeral | Pin the proxy port. Processes sharing the port share the secret through `proxy-token` (mode 0600), and one takes the port over if its owner exits. |
 | `OPENCODE_CLAUDE_CWD` | request's project directory | Force the working directory of every Claude turn. |
 | `OPENCODE_CLAUDE_FORWARD_SYSTEM_CONTEXT` | on | `0` stops forwarding the agent prompt, instructions, MCP notes and skills list. |
-| `OPENCODE_CLAUDE_HOST_TRANSCRIPT` | on | `0` disables the history check: Claude sessions are resumed even if the host's history changed. Changes to the system prompt alone (model, agent, date) never count as a change. |
+| `OPENCODE_CLAUDE_HOST_TRANSCRIPT` | on | `0` disables only content-divergence detection (e.g. context-pruning plugins). Reverts/edits and pinned native resume remain active. With the check on, rewritten history is transferred instead of resuming stale context. System-prompt changes and moving Plan-mode reminders do not count as divergence. |
+| `OPENCODE_CLAUDE_STOP_GRACE_MS` | `2000` | Time for an interrupted Claude turn to record its interruption before the process is closed. The next turn waits for this stop to settle. `0` closes immediately. |
 | `OPENCODE_CLAUDE_HISTORY_MAX_CHARS` | `400000` | Character budget for the conversation copied into a new Claude session. `0` disables the copy. |
 | `OPENCODE_CLAUDE_PARKED_TURN_TTL_MS` | `3600000` | How long a turn can wait for tool results before its CLI process is closed. `0` = no limit. Results that arrive later still work: the turn is rebuilt with the history copied in. |
 | `OPENCODE_CLAUDE_STRUCTURED_OUTPUT_REAP_MS` | `60000` | Grace period for a turn waiting only on `StructuredOutput`, which OpenCode never answers. |

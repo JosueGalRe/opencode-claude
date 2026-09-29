@@ -87,13 +87,100 @@ export type ClaudeQueryHandle = {
   stream: AsyncIterable<unknown>;
   /** End the query and its CLI subprocess (SDK `Query.close()`); idempotent. */
   close: () => void;
+  interrupt?: () => Promise<void>;
+  stop?: (graceMs?: number) => Promise<void>;
+  onEvent?: (listener: (event: unknown) => void) => void;
 };
+
+export type StoppableClaudeQueryHandle = ClaudeQueryHandle & {
+  stop: (graceMs?: number) => Promise<void>;
+  onEvent: (listener: (event: unknown) => void) => void;
+};
+
+export function stopGraceMs(): number {
+  const raw = Number(process.env.OPENCODE_CLAUDE_STOP_GRACE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 2_000;
+}
+
+/** Interrupt, observe the CLI's interruption entries, then close on result or timeout. */
+export function withGracefulStop(handle: ClaudeQueryHandle): StoppableClaudeQueryHandle {
+  if (handle.stop && handle.onEvent) return { ...handle, stop: handle.stop, onEvent: handle.onEvent };
+  const inner = handle.stream[Symbol.asyncIterator]();
+  const listeners: Array<(event: unknown) => void> = [];
+  const completed = Promise.withResolvers<void>();
+  const closedSignal = Promise.withResolvers<IteratorResult<unknown>>();
+  let ended = false;
+  let sawResult = false;
+  let closed = false;
+  let pending: Promise<IteratorResult<unknown>> | null = null;
+  const tap: AsyncIterableIterator<unknown> = {
+    next() {
+      if (closed || ended) return Promise.resolve({ done: true, value: undefined });
+      // A parked/running consumer may already have next() in flight. Share
+      // that read with stop(), rather than issuing concurrent SDK reads.
+      pending ??= Promise.race([inner.next(), closedSignal.promise]).then((next) => {
+        if (closed) return { done: true, value: undefined };
+        if (next.done) ended = true;
+        else {
+          const event = next.value;
+          if (event && typeof event === "object" && "type" in event && event.type === "result") {
+            sawResult = true;
+            completed.resolve();
+          }
+          for (const listener of listeners) listener(event);
+        }
+        return next;
+      }).catch((error: unknown) => {
+        ended = true;
+        throw error;
+      }).finally(() => { pending = null; });
+      return pending;
+    },
+    [Symbol.asyncIterator]() { return tap; },
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    closedSignal.resolve({ done: true, value: undefined });
+    handle.close();
+  };
+  let stopping: Promise<void> | null = null;
+  const stop = (graceMs = stopGraceMs()) => {
+    stopping ??= (async () => {
+      if (!closed && !ended && !sawResult && handle.interrupt && graceMs > 0) {
+        const interrupt = handle.interrupt;
+        const settle = (async () => {
+          try {
+            await interrupt();
+            while (!closed && !ended && !sawResult) {
+              if ((await tap.next()).done) break;
+            }
+          } catch (error) {
+            // The SDK rejects when the process is already gone; close still runs.
+            log.info("[opencode-claude] stopped query could not settle", error instanceof Error ? error.message : error);
+          }
+        })();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([settle, completed.promise, new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, graceMs);
+          timer.unref?.();
+        })]);
+        if (timer) clearTimeout(timer);
+      }
+      close();
+    })();
+    return stopping;
+  };
+  return { ...handle, stream: tap, close, stop, onEvent: (listener) => { listeners.push(listener); } };
+}
 
 export type StartClaudeQueryParams = {
   prompt: string | AsyncIterable<unknown>;
   cwd: string;
   model?: string;
   resume?: string;
+  /** Resume this main-chain entry, not the latest branch in the file. */
+  resumeSessionAt?: string;
   permissionMode?: string;
   effort?: ClaudeEffort | string;
   systemPrompt?:
@@ -182,6 +269,8 @@ export async function startClaudeQuery(
 
   const resume = trimmedString(params.resume);
   if (resume) options.resume = resume;
+  const resumeSessionAt = trimmedString(params.resumeSessionAt);
+  if (resume && resumeSessionAt) options.resumeSessionAt = resumeSessionAt;
 
   const permissionMode = trimmedString(params.permissionMode);
   if (ALLOWED_PERMISSION_MODES.has(permissionMode)) {
@@ -318,5 +407,9 @@ export async function startClaudeQuery(
     }
   };
 
-  return { stream: result as AsyncIterable<unknown>, close };
+  return withGracefulStop({
+    stream: result as AsyncIterable<unknown>,
+    interrupt: async () => { await result?.interrupt?.(); },
+    close,
+  });
 }

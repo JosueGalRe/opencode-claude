@@ -396,8 +396,8 @@ async function main() {
     ]);
     assert.equal(calls.length, orphanCalls + 1);
     const orphan = calls.at(-1)!;
-    assert.equal(orphan.resume, undefined, "orphaned results rebuild the turn");
-    assert.match(orphan.prompt, /list the files/, "history before the step");
+    assert.equal(orphan.resume, SESSION_ID, "orphaned results rebuild only the step, keeping native history");
+    assert.doesNotMatch(orphan.prompt, /<conversation_history>/);
     assert.match(orphan.prompt, /file-A\\nfile-B/, "tool result reaches Claude");
     assert.match(orphan.prompt, /\\"command\\":\\"ls\\"/, "tool call reaches Claude");
     assert.match(orphan.prompt, /Continue the task from these results/);

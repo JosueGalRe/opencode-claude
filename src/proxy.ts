@@ -23,11 +23,11 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
   clearAllBridges,
-  deleteBridge,
-  deleteBridgesByConversation,
   findBridgeByConversation,
   findBridgeByPendingTool,
   putBridge,
+  stopBridge,
+  stopConversationBridges,
   type ParkedBridge,
   type ParkedToolCall,
 } from "./bridge-pool.js";
@@ -66,17 +66,23 @@ import {
   SESSION_HEADER,
   type ClaudeEffort,
 } from "./constants.js";
-import { startClaudeQuery } from "./query.js";
+import { startClaudeQuery, withGracefulStop } from "./query.js";
 import {
   clearForeignSessionId,
   conversationKeyFromMessages,
   findClaudeSessionFile,
   getForeignSessionId,
   getSessionBinding,
+  getSessionTurns,
   historyFingerprint,
+  matchTurnHistory,
   nonSystemMessages,
   setForeignSessionId,
   setHistoryFingerprint,
+  recordTurnStart,
+  rewindSessionTurns,
+  sessionFileHasEntry,
+  userHistoryBoundary,
 } from "./session-store.js";
 import { subscriptionRefusal } from "./detect.js";
 import { log } from "./log.js";
@@ -98,6 +104,8 @@ import {
   openaiToolResultToMcpContent,
   priorMessagesOf,
   promptAsStream,
+  userHistoryFingerprints,
+  withoutSystemReminders,
   SYNTHETIC_TOOL_MEDIA_PROMPT,
   withConversationContext,
   type AnthropicContentBlock,
@@ -436,7 +444,7 @@ export async function releaseProxy(): Promise<void> {
 export async function stopProxy(): Promise<void> {
   stopSiblingWatch();
   // Parked turns each hold a live claude CLI child; nothing resumes them now.
-  clearAllBridges();
+  await clearAllBridges();
   if (server) {
     server.stop(true);
     server = null;
@@ -694,7 +702,7 @@ async function closeTurnOnAbort<T>(
   bridgeId: string,
   work: () => Promise<T>,
 ): Promise<T> {
-  const abort = () => deleteBridge(bridgeId);
+  const abort = () => { void stopBridge(bridgeId); };
   if (signal.aborted) abort();
   else signal.addEventListener("abort", abort, { once: true });
   try {
@@ -753,7 +761,7 @@ function dropDivergedSession(
   const binding = getSessionBinding(conversationKey);
   const seen = binding?.history;
   if (!binding?.foreignSessionId || !seen) return;
-  const history = nonSystemMessages(priorMessages);
+  const history = nonSystemMessages(withoutSystemReminders(priorMessages));
   const divergence =
     history.length < seen.count ||
     historyFingerprint(history.slice(0, seen.count)).hash !== seen.hash
@@ -770,7 +778,6 @@ function dropDivergedSession(
       sentMessages: seen.count,
     },
   );
-  deleteBridgesByConversation(conversationKey);
   clearForeignSessionId(conversationKey);
 }
 
@@ -782,12 +789,16 @@ function dropDivergedSession(
 function findParkedBridge(
   conversationKey: string,
   answeredStep: AnsweredToolStep | null,
+  messages: OpenAIMessage[],
 ): ParkedBridge | null {
   const byConversation = findBridgeByConversation(conversationKey);
-  if (byConversation && byConversation.pendingTools.size > 0) return byConversation;
   for (const toolCallId of answeredStep?.results.keys() ?? []) {
     const byTool = findBridgeByPendingTool(toolCallId);
     if (byTool) return byTool;
+  }
+  if (byConversation && byConversation.pendingTools.size > 0) {
+    const match = matchTurnHistory(getSessionTurns(conversationKey), userHistoryFingerprints(messages));
+    if (match.kind === "latest" || match.kind === "untracked") return byConversation;
   }
   return null;
 }
@@ -825,6 +836,19 @@ function answerParkedTools(
   // Deliver queued user messages with the last tool result resolved now,
   // so they reach Claude exactly once.
   const steering = lastResolved ? collectSteeringText(messages) : "";
+  if (steering && !bridge.metaKind) {
+    const prior = nonSystemMessages(withoutSystemReminders(priorMessages));
+    const seen = getSessionBinding(bridge.conversationKey)?.history;
+    // Continuations must not restart the turn, but must not bless a DCP
+    // rewrite either: leave the old checkpoint for the next new turn.
+    const rewritten = seen && (prior.length < seen.count ||
+      historyFingerprint(prior.slice(0, seen.count)).hash !== seen.hash);
+    const history = rewritten ? seen : historyFingerprint(prior);
+    const boundary = userHistoryBoundary(userHistoryFingerprints(messages), history);
+    if (boundary) recordTurnStart(bridge.conversationKey, boundary,
+      userHistoryBoundary(userHistoryFingerprints(priorMessages), history));
+    setHistoryFingerprint(bridge.conversationKey, history);
+  }
   for (const toolId of resolvable) {
     const result = results.get(toolId)!;
     bridge.pendingTools
@@ -837,9 +861,6 @@ function answerParkedTools(
       conversationKey: bridge.conversationKey,
       steeringChars: steering.length,
     });
-    // The session has now seen the steering message: later turns must not
-    // read it as a turn answered elsewhere.
-    setHistoryFingerprint(bridge.conversationKey, historyFingerprint(priorMessages));
   }
   if (bridge.pendingTools.size === 0) {
     log.info("[opencode-claude] resuming parked bridge", {
@@ -887,15 +908,57 @@ function logPromptShape(
  * context-free session, so the stale binding is dropped and the caller
  * transfers the conversation history instead.
  */
-function resumableSessionId(conversationKey: string): string | undefined {
+function resumableSession(conversationKey: string, priorMessages: OpenAIMessage[]): {
+  resume?: string;
+  resumeSessionAt?: string;
+} {
   const sessionId = getForeignSessionId(conversationKey);
-  if (!sessionId || findClaudeSessionFile(sessionId)) return sessionId;
-  log.warn("[opencode-claude] stored Claude session file missing; transferring history", {
-    conversationKey,
-    foreignSessionId: sessionId,
-  });
-  clearForeignSessionId(conversationKey);
-  return undefined;
+  if (!sessionId) return {};
+  const file = findClaudeSessionFile(sessionId);
+  if (!file) {
+    log.warn("[opencode-claude] stored Claude session file missing; transferring history", {
+      conversationKey, foreignSessionId: sessionId,
+    });
+    clearForeignSessionId(conversationKey);
+    return {};
+  }
+  const match = matchTurnHistory(getSessionTurns(conversationKey), userHistoryFingerprints(priorMessages));
+  switch (match.kind) {
+    case "rewind":
+      if (match.leafUuid && !sessionFileHasEntry(file, match.leafUuid)) {
+        clearForeignSessionId(conversationKey);
+        return {};
+      }
+      // Restore the content checkpoint too, before the fork's DCP check.
+      rewindSessionTurns(conversationKey, match.index);
+      break;
+    case "diverged":
+      clearForeignSessionId(conversationKey);
+      return {};
+    case "latest":
+    case "untracked":
+      break;
+  }
+  if (hostTranscriptWatchEnabled()) dropDivergedSession(conversationKey, priorMessages);
+  const binding = getSessionBinding(conversationKey);
+  if (!binding?.foreignSessionId) return {};
+  const leaf = binding.leafUuid;
+  return { resume: sessionId, resumeSessionAt: leaf && sessionFileHasEntry(file, leaf) ? leaf : undefined };
+}
+
+const spawnLocks = new Map<string, Promise<void>>();
+
+/** The lock covers binding selection through publication of the new writer. */
+async function acquireSpawnLock(key: string): Promise<() => void> {
+  const previous = spawnLocks.get(key) ?? Promise.resolve();
+  const held = Promise.withResolvers<void>();
+  const tail = previous.then(() => held.promise);
+  spawnLocks.set(key, tail);
+  await previous;
+  return () => {
+    held.resolve();
+    if (spawnLocks.get(key) === tail) spawnLocks.delete(key);
+  };
 }
 
 async function handleChatCompletions(
@@ -916,29 +979,47 @@ async function handleChatCompletions(
   const baseConversationKey =
     sessionHeader || conversationKeyFromMessages(messages);
   const conversationKey = requestKeyNamespace(metaKind) + baseConversationKey;
+  const releaseSpawnLock = await acquireSpawnLock(metaKind === "summary" ? baseConversationKey : conversationKey);
+  try {
   if (metaKind === "summary") {
     // OpenCode has compacted its history; resuming the old Claude session
     // would restore the pre-compaction context, so the next normal turn must
     // rebuild from the (already compacted) host array instead.
-    deleteBridgesByConversation(baseConversationKey);
+    await stopConversationBridges(baseConversationKey);
     clearForeignSessionId(baseConversationKey);
   }
   const selection = selectionFromRequest(req, body);
   const model = resolveClaudeModelId(selection.modelId);
   const responseModel = body.model || model;
   const stream = body.stream !== false;
-  const priorMessages = priorMessagesOf(messages);
-  if (!isMetaRequest && hostTranscriptWatchEnabled()) {
-    dropDivergedSession(conversationKey, priorMessages);
-  }
+  let priorMessages = priorMessagesOf(messages);
 
   // Tool results OpenCode returns in this request. Meta requests carry the
   // conversation only as material to transform; they never resume a turn.
   const answeredStep = isMetaRequest ? null : collectAnsweredToolStep(messages);
-  const parkedBridge = findParkedBridge(conversationKey, answeredStep);
+  const parkedBridge = findParkedBridge(conversationKey, answeredStep, messages);
   if (parkedBridge) {
     const events = answerParkedTools(parkedBridge, answeredStep, messages, priorMessages);
     return turnResponse(req, events, responseModel, parkedBridge, stream);
+  }
+  // Includes stops already settling after a V2 stop event or park reaping.
+  await stopConversationBridges(conversationKey, "Superseded by a newer turn");
+  if (!isMetaRequest) {
+    const turns = getSessionTurns(conversationKey);
+    const latest = turns.at(-1);
+    const prints = userHistoryFingerprints(messages);
+    // A stopped turn may have no assistant output at all. Its prompt is
+    // already delivered, not part of the queued messages of the new turn.
+    if (latest && prints.length > latest.count &&
+        userHistoryFingerprints(priorMessages).length < latest.count &&
+        matchTurnHistory(turns, prints).kind === "latest") {
+      let users = 0;
+      const start = messages.findIndex((msg, i) => {
+        if (!isPromotedToolMedia(msg, messages[i - 1])) users += userHistoryFingerprints([msg]).length;
+        return users > latest.count;
+      });
+      priorMessages = messages.slice(0, start);
+    }
   }
   if (answeredStep) {
     log.warn(
@@ -962,7 +1043,7 @@ async function handleChatCompletions(
 
   const prompt = answeredStep
     ? answeredToolStepPrompt(messages, answeredStep)
-    : latestUserPrompt(messages);
+    : latestUserPrompt(messages.slice(priorMessages.length));
   logPromptShape(prompt, messages);
   if (prompt === "" && openCodeTools.length === 0) {
     return errorResponse(400, "invalid_request_error", "No user message found");
@@ -995,11 +1076,12 @@ async function handleChatCompletions(
   const refusal = await subscriptionRefusal();
   if (refusal) return errorResponse(401, "authentication_error", refusal);
 
-  // Meta requests are single-shot transformations of the host array, and a
-  // turn rebuilt around orphaned tool results cannot continue the session
-  // that made the calls.
-  const resume =
-    isMetaRequest || answeredStep ? undefined : resumableSessionId(conversationKey);
+  // Orphaned tool results rebuild the step, not the conversation: they can
+  // still use the pinned session and carry the results in their prompt.
+  const { resume, resumeSessionAt } = isMetaRequest ? {} : resumableSession(
+    conversationKey,
+    answeredStep ? messages.slice(0, answeredStep.assistantIndex) : priorMessages,
+  );
 
   // No resumable Claude session (first claude-code turn of this chat, model
   // switch mid-conversation, lost store, meta request, orphaned tool
@@ -1028,24 +1110,8 @@ async function handleChatCompletions(
   // with the host history that session has now seen. SDK events all carry
   // the session id, so it is written once per change, not once per event.
   // Meta requests never resume, so they bind nothing.
-  const seenHistory = isMetaRequest ? null : historyFingerprint(priorMessages);
-  let boundSessionId: string | null = null;
-  const turn = new TurnRunner({
-    bridgeId,
-    conversationKey,
-    onEvent: seenHistory
-      ? (event) => {
-          const sessionId = extractSessionId(event);
-          if (!sessionId || sessionId === boundSessionId) return;
-          boundSessionId = sessionId;
-          setForeignSessionId(conversationKey, sessionId, {
-            modelId: model,
-            cwd,
-            history: seenHistory,
-          });
-        }
-      : undefined,
-  });
+  const seenHistory = isMetaRequest ? null : historyFingerprint(withoutSystemReminders(priorMessages));
+  const turn = new TurnRunner({ bridgeId, conversationKey });
 
   // OpenCode's tools run only through the mcp__opencode__* bridge so every
   // call passes OpenCode's own permission rules. If the bridge cannot be
@@ -1069,7 +1135,14 @@ async function handleChatCompletions(
   }
   const toolNames = bridged ? openCodeToolNames(openCodeTools) : [];
 
-  const handle = await queryStarter({
+  // Persist before spawning: a store failure must not leak an unpublished
+  // Claude process. A failed spawn keeps the previous leaf for its retry.
+  if (seenHistory) {
+    const boundary = userHistoryBoundary(userHistoryFingerprints(messages), seenHistory);
+    if (boundary) recordTurnStart(conversationKey, boundary,
+      userHistoryBoundary(userHistoryFingerprints(priorMessages), seenHistory));
+  }
+  const handle = withGracefulStop(await queryStarter({
     prompt:
       metaKind === "title"
         ? titlePrompt(messages)
@@ -1079,6 +1152,7 @@ async function handleChatCompletions(
     cwd,
     model,
     resume,
+    resumeSessionAt,
     // Meta requests force thinking off; effort "max" is rejected by the API
     // when thinking is disabled, so effort must not be forwarded there.
     effort: isMetaRequest ? undefined : selection.effort,
@@ -1102,8 +1176,23 @@ async function handleChatCompletions(
     permissionMode: bridged ? "bypassPermissions" : "dontAsk",
     allowDangerouslySkipPermissions: bridged,
     systemPrompt: turnSystemPrompt(metaKind, messages, bridged ? toolNames : null),
-  });
+  }));
   turn.attach(handle);
+
+  if (seenHistory) {
+    let boundSessionId: string | null = null;
+    // Stop drains parked streams too. Observe there, not only in TurnRunner.
+    handle.onEvent((event) => {
+      const sessionId = extractSessionId(event);
+      if (!sessionId) return;
+      const first = sessionId !== boundSessionId;
+      boundSessionId = sessionId;
+      setForeignSessionId(conversationKey, sessionId, {
+        modelId: model, cwd, leafUuid: mainChainUuid(event),
+        ...(first ? { history: seenHistory } : {}),
+      });
+    });
+  }
 
   const bridge: ParkedBridge = {
     id: bridgeId,
@@ -1115,6 +1204,7 @@ async function handleChatCompletions(
     resume: () => turn.resume(),
   };
   putBridge(bridge);
+  releaseSpawnLock();
 
   const options = { suppressReasoning: isMetaRequest };
   if (!stream) {
@@ -1132,8 +1222,19 @@ async function handleChatCompletions(
     return failureResponse(probe.errorText, conversationKey, metaKind);
   }
   return streamOpenAIResponse(probe.replay, responseModel, bridge, options);
+  } finally {
+    releaseSpawnLock();
+  }
 }
 
+/** Compaction's synthetic user summary is a leaf; its boundary/replays are not. */
+function mainChainUuid(event: unknown): string | undefined {
+  if (!event || typeof event !== "object" || !("type" in event)) return undefined;
+  if (event.type !== "assistant" && event.type !== "user") return undefined;
+  if ("parent_tool_use_id" in event && event.parent_tool_use_id) return undefined;
+  if ("isReplay" in event && event.isReplay === true) return undefined;
+  return "uuid" in event && typeof event.uuid === "string" && event.uuid ? event.uuid : undefined;
+}
 
 function extractSessionId(event: unknown): string | null {
   if (!event || typeof event !== "object") return null;
@@ -1673,7 +1774,7 @@ function streamOpenAIResponse(
       // the turn down instead of leaking the CLI process and the bridge.
       streamClosed = true;
       if (heartbeat) clearInterval(heartbeat);
-      deleteBridge(bridge.id);
+      void stopBridge(bridge.id);
     },
   });
 

@@ -9,9 +9,9 @@
  * request resolves the calls and continues the same SDK stream via
  * `resume()`.
  */
-import { deleteBridge, type ParkedToolCall } from "./bridge-pool.js";
+import { deleteBridge, stopBridge, type ParkedToolCall } from "./bridge-pool.js";
 import { log } from "./log.js";
-import type { ClaudeQueryHandle } from "./query.js";
+import type { StoppableClaudeQueryHandle } from "./query.js";
 import { expectedParallelGroup } from "./tool-bridge.js";
 
 /**
@@ -79,8 +79,6 @@ function stallError(ms: number): Error {
 export type TurnRunnerOptions = {
   bridgeId: string;
   conversationKey: string;
-  /** Sees every SDK event before it is yielded. */
-  onEvent?: (event: unknown) => void;
 };
 
 type Raced =
@@ -92,7 +90,7 @@ export class TurnRunner {
   /** Bridged calls waiting for OpenCode, by tool_call_id. */
   readonly pendingTools = new Map<string, ParkedToolCall>();
 
-  private handle: ClaudeQueryHandle | null = null;
+  private handle: StoppableClaudeQueryHandle | null = null;
   private iterator: AsyncIterator<unknown> | null = null;
   private parked = false;
   private parkWaiters: Array<() => void> = [];
@@ -119,7 +117,7 @@ export class TurnRunner {
   };
 
   /** The MCP server exists before the query, so the handle arrives late. */
-  attach(handle: ClaudeQueryHandle): void {
+  attach(handle: StoppableClaudeQueryHandle): void {
     this.handle = handle;
   }
 
@@ -129,6 +127,7 @@ export class TurnRunner {
     if (!handle) throw new Error("TurnRunner.events() before attach()");
     this.iterator ??= handle.stream[Symbol.asyncIterator]();
     const iterator = this.iterator;
+    let ended = false;
     try {
       while (true) {
         // Parked and the message is closed: hand every collected call to
@@ -153,17 +152,20 @@ export class TurnRunner {
           this.messageOpen = false;
           continue;
         }
-        if (raced.value.done) break;
+        if (raced.value.done) {
+          ended = true;
+          break;
+        }
         const event = raced.value.value;
         this.trackMessageState(event);
         this.retryWaitMs = apiRetryDelayMs(event);
-        this.options.onEvent?.(event);
         yield event;
       }
     } finally {
       if (!this.parked) {
-        handle.close();
-        deleteBridge(this.options.bridgeId);
+        this.clearParkReap();
+        if (ended) deleteBridge(this.options.bridgeId);
+        else void stopBridge(this.options.bridgeId);
       }
     }
   }
@@ -286,7 +288,7 @@ export class TurnRunner {
           : "[opencode-claude] reaping parked turn past its TTL",
         { conversationKey: this.options.conversationKey, pending: this.pendingTools.size },
       );
-      deleteBridge(this.options.bridgeId);
+      void stopBridge(this.options.bridgeId);
     }, ms);
     this.reapTimer.unref?.();
   }

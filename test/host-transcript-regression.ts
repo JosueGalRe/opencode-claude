@@ -3,7 +3,7 @@
  * transforms) must drop the Claude session binding so the turn rebuilds from
  * the host's array instead of resuming a stale transcript. OpenCode
  * compaction (summary meta request) must also clear the binding, and
- * OPENCODE_CLAUDE_HOST_TRANSCRIPT=0 restores resume-always behavior.
+ * OPENCODE_CLAUDE_HOST_TRANSCRIPT=0 disables only content checking.
  *
  * Run: bun test/host-transcript-regression.ts
  */
@@ -130,17 +130,19 @@ async function main() {
       "post-compaction turn does not resume",
     );
 
-    // Opt-out flag: diverged history resumes anyway.
+    // Opt-out flag: rewritten non-user history resumes, but edits do not.
     process.env.OPENCODE_CLAUDE_HOST_TRANSCRIPT = "0";
     await post("conv-b", [user("one")]);
     await post("conv-b", [user("one"), assistant("a1"), user("two")]);
     assert.equal(seen.at(-1)!.resume, "foreign-1");
-    await post("conv-b", [user("two"), assistant("a2"), user("three")]);
+    await post("conv-b", [user("one"), assistant("rewritten"), user("two"), assistant("a2"), user("three")]);
     assert.equal(
       seen.at(-1)!.resume,
       "foreign-1",
-      "flag off keeps resume-always behavior",
+      "flag off permits content rewrites",
     );
+    await post("conv-b", [user("edited one"), assistant("rewritten"), user("two"), assistant("a2"), user("three"), assistant("a3"), user("four")]);
+    assert.equal(seen.at(-1)!.resume, undefined, "flag off still handles edits");
   } finally {
     delete process.env.OPENCODE_CLAUDE_HOST_TRANSCRIPT;
     setClaudeQueryStarter(null);

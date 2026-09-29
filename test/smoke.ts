@@ -10,6 +10,7 @@ import { join } from "node:path";
 
 // Keep session bindings out of the user's real ~/.local/share store.
 process.env.XDG_DATA_HOME = mkdtempSync(join(tmpdir(), "opencode-claude-smoke-"));
+process.env.CLAUDE_CONFIG_DIR = join(process.env.XDG_DATA_HOME, "claude");
 
 async function main() {
   const { buildClaudeCodeChildEnv } = await import("../src/auth-env.ts");
@@ -345,12 +346,15 @@ async function main() {
     prompt: "hi",
     cwd: process.cwd(),
     autoCompactEnabled: false,
+    resume: "session",
+    resumeSessionAt: "leaf",
     queryImpl: () => (input: { options: Record<string, unknown> }) => {
       sdkOptions = input.options;
-      return {};
+      return (async function* () {})();
     },
   });
   assert.equal(sdkOptions!.strictMcpConfig, true);
+  assert.equal(sdkOptions!.resumeSessionAt, "leaf");
   assert.deepEqual(sdkOptions!.settings, {
     disableClaudeAiConnectors: true,
     autoCompactEnabled: false,
@@ -358,20 +362,22 @@ async function main() {
   assert.equal(sdkOptions!.thinking, undefined);
   await startClaudeQuery({
     prompt: "hi", cwd: process.cwd(), effort: "medium",
+    resumeSessionAt: "ignored-without-resume",
     thinking: { type: "adaptive" },
     queryImpl: () => (input: { options: Record<string, unknown> }) => {
       sdkOptions = input.options;
-      return {};
+      return (async function* () {})();
     },
   });
   assert.deepEqual(sdkOptions!.thinking, { type: "adaptive", display: "summarized" });
+  assert.equal(sdkOptions!.resumeSessionAt, undefined);
   assert.equal((sdkOptions!.settings as Record<string, unknown>).showThinkingSummaries, undefined);
   assert.equal(sdkOptions!.extraArgs, undefined);
   await startClaudeQuery({
     prompt: "hi", cwd: process.cwd(), thinking: { type: "disabled" },
     queryImpl: () => (input: { options: Record<string, unknown> }) => {
       sdkOptions = input.options;
-      return {};
+      return (async function* () {})();
     },
   });
   assert.deepEqual(sdkOptions!.thinking, { type: "disabled" });
@@ -1665,8 +1671,7 @@ async function main() {
 
       // 2. Stored binding whose transcript file EXISTS → resume, no injection
       const fakeProjectsDir = joinPath(
-        homedir(),
-        ".claude",
+        process.env.CLAUDE_CONFIG_DIR!,
         "projects",
         "opencode-claude-smoke",
       );

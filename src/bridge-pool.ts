@@ -2,7 +2,7 @@
  * Parked Claude Agent SDK turns waiting for OpenCode tool results
  * (Cursor bridge-pool pattern).
  */
-import type { ClaudeQueryHandle } from "./query.js";
+import { withGracefulStop, type ClaudeQueryHandle } from "./query.js";
 import type { McpToolResultContent } from "./prompt.js";
 
 export type ParkedToolCall = {
@@ -26,21 +26,13 @@ export type ParkedBridge = {
 };
 
 const bridges = new Map<string, ParkedBridge>();
+const stopping = new Map<string, Set<Promise<void>>>();
 
 export function putBridge(bridge: ParkedBridge): void {
-  // One active bridge per conversation — drop any prior turn for this key.
+  // Starts are serialized and stop the previous writer before spawning.
   for (const [id, existing] of bridges) {
     if (existing.conversationKey === bridge.conversationKey && id !== bridge.id) {
-      for (const tool of existing.pendingTools.values()) {
-        tool.reject(new Error("Superseded by a newer turn"));
-      }
-      existing.pendingTools.clear();
-      try {
-        existing.handle.close();
-      } catch {
-        // ignore
-      }
-      bridges.delete(id);
+      void stopBridge(id, "Superseded by a newer turn");
     }
   }
   bridges.set(bridge.id, bridge);
@@ -75,6 +67,7 @@ export function deleteBridge(id: string): void {
   for (const tool of bridge.pendingTools.values()) {
     tool.reject(new Error("Bridge closed"));
   }
+  bridge.pendingTools.clear();
   try {
     bridge.handle.close();
   } catch {
@@ -82,15 +75,48 @@ export function deleteBridge(id: string): void {
   }
 }
 
-/** Close every parked turn's Claude CLI child (proxy shutdown). */
-export function clearAllBridges(): void {
-  for (const id of [...bridges.keys()]) {
-    deleteBridge(id);
-  }
+/** Remove immediately, but keep the settling stop visible to the next spawn. */
+export function stopBridge(id: string, reason = "Bridge closed"): Promise<void> {
+  const bridge = bridges.get(id);
+  if (!bridge) return Promise.resolve();
+  bridges.delete(id);
+  const key = bridge.conversationKey;
+  const pending = stopping.get(key) ?? new Set<Promise<void>>();
+  stopping.set(key, pending);
+  const stop = (async () => {
+    try {
+      await withGracefulStop(bridge.handle).stop();
+    } finally {
+      // Reject only after interrupt/settle: otherwise the CLI may answer the
+      // tool error with another model call before its interrupt arrives.
+      for (const tool of bridge.pendingTools.values()) tool.reject(new Error(reason));
+      bridge.pendingTools.clear();
+    }
+  })();
+  pending.add(stop);
+  const finished = () => {
+    pending.delete(stop);
+    if (!pending.size && stopping.get(key) === pending) stopping.delete(key);
+  };
+  void stop.then(finished, finished);
+  return stop;
+}
+
+export async function stopConversationBridges(conversationKey: string, reason?: string): Promise<void> {
+  const stops = [...bridges.values()]
+    .filter((bridge) => bridge.conversationKey === conversationKey)
+    .map((bridge) => stopBridge(bridge.id, reason));
+  await Promise.all([...stops, ...(stopping.get(conversationKey) ?? [])]);
+}
+
+/** Shutdown also waits for stops already removed from the active pool. */
+export async function clearAllBridges(): Promise<void> {
+  const stops = [...bridges.keys()].map((id) => stopBridge(id));
+  await Promise.all([...stops, ...[...stopping.values()].flatMap((pending) => [...pending])]);
 }
 
 export function deleteBridgesByConversation(conversationKey: string): void {
   for (const bridge of [...bridges.values()]) {
-    if (bridge.conversationKey === conversationKey) deleteBridge(bridge.id);
+    if (bridge.conversationKey === conversationKey) void stopBridge(bridge.id);
   }
 }
