@@ -1,9 +1,45 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 - 2026-09-29
 
 ### Added
 
+- **Native OpenCode V2 plugin** — one entrypoint serves both loaders: the
+  default export carries the V2 `Plugin.define` definition and keeps the V1
+  implementation as `server()`. On V2 the plugin registers the provider, the
+  model catalog (input windows and effort variants) and the CLI sign-in
+  itself, and its `model.request` hook stamps each request with the session,
+  effort and directory. V1 needs OpenCode >= 1.18.29 (supersedes the
+  beta-based approach of upstream #3).
+- **Agent prompts and instructions reach Claude** — OpenCode's custom agent
+  prompts, `Instructions from:` files, MCP notes and the skills list are
+  appended to the Claude Code system prompt. On by default;
+  `OPENCODE_CLAUDE_FORWARD_SYSTEM_CONTEXT=0` opts out. What is dropped on V2
+  is under Fixes, "OpenCode V2 third-party rejection" (upstream #25, fixes
+  #6).
+- **Rebuild from host history** — a resumed Claude session replays its own
+  transcript, so host-side rewrites (context-pruning plugins like DCP,
+  message transforms) had no effect from turn 2 on, and turns after a
+  compaction resumed the pre-compaction context. Each turn now fingerprints
+  the prior messages; when they diverge, the Claude session is dropped and
+  the host's history is transferred instead. Summary requests clear the
+  binding outright. `OPENCODE_CLAUDE_HOST_TRANSCRIPT=0` turns the divergence
+  check off; see Changed (upstream #5; compaction reset ported from the #11
+  batch).
+- **Parallel tool calls** — read-only tools are annotated `readOnlyHint` so
+  the CLI starts them together, and all calls of one message reach OpenCode
+  in a single `tool_calls` response, so subagents launched together run in
+  parallel (upstream #26).
+- **Mid-turn user messages** — a message sent while a turn is waiting on
+  tools is delivered to Claude with the next tool result (upstream #23).
+- **Full tool parameter schemas** — tools are bridged with their complete
+  JSON Schema (descriptions, enums, nested item shapes, required fields)
+  instead of a primitive type per field. Each converted schema is checked
+  against the SDK first; one it cannot serialise falls back to the primitive
+  mapping (upstream #24).
+- **Input window for 1M models** — they declare a 900k input limit, so
+  OpenCode auto-compacts before reaching the edge of the context (upstream
+  #18).
 - **Code-mode guidance for V2's `execute` tool** — when the host offers
   `execute`, bridged turns now tell Claude how to use it:
   `mcp__opencode__execute({ code })` runs JS in OpenCode's confined runtime,
@@ -88,6 +124,34 @@
 
 ### Fixes
 
+- **Tool-result images** — tool results were reduced to text before the
+  parked turn resumed, so images from `read` never reached the model.
+  Attachments are now relayed as MCP image blocks, including the
+  "Attached media from tool result:" message OpenCode emits for
+  openai-compatible providers (upstream #8, media part of #11).
+- **Subagent list in the task tool** — OpenCode appends the list of
+  subagents to the end of a description longer than the 2048 characters
+  Claude sees, so Claude never learned which `subagent_type` values exist.
+  The list now goes first (upstream #21).
+- **Turns parked only on `StructuredOutput`** — OpenCode never sends a tool
+  result for it, so each structured request leaked a Claude Code process.
+  Such a park is closed after
+  `OPENCODE_CLAUDE_STRUCTURED_OUTPUT_REAP_MS` (default `60000`) (upstream
+  #22).
+- **Tool bridge with a newer zod** — with a plugin-side zod newer than the
+  SDK's bundled one, a `z.record` field broke `tools/list` for every tool.
+  Object parameters are now bridged as open objects, which serialise the
+  same across versions (upstream #20, fixes #12).
+- **Update-summary envelopes** — OpenCode 1.18.25+'s update-summary request
+  (`<conversation>` + `<prior-summary>`) ran as a normal turn instead of a
+  summary. Meta requests also forwarded the selected effort with thinking
+  off, which the API rejects with a 400 for effort `max`; they now send no
+  effort (upstream #14, #4).
+- **Per-turn usage** — OpenCode reads usage as the current context size to
+  schedule compaction, but got the query's cumulative totals. The latest API
+  call's totals are now reported, the turn's sum rides along as
+  `aggregate_usage`, and replayed assistant messages are counted once
+  (upstream #10).
 - **Sonnet context window** — `claude-sonnet-5-5` and `claude-sonnet-4-6`
   were declared 1M but run at 200k, so OpenCode compacted too late. The
   plain ids now declare 200k, and `claude-sonnet-5-5[1m]` /
