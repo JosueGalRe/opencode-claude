@@ -51,9 +51,13 @@ async function main() {
   try {
     // --- Exact CLI strings (UTC)
     const sep22 = Date.UTC(2026, 8, 22, 12);
-    assert.equal(cliResetTime(Date.UTC(2026, 9, 6, 13), "UTC", sep22), "Oct 6, 1pm (UTC)");
+    assert.match(cliResetTime(Date.UTC(2026, 9, 6, 13), "UTC", sep22), /^Oct 6(?:,| at) 1pm \(UTC\)$/);
     assert.equal(
       parseResetTimeFromText("You've hit your weekly limit · resets Oct 6, 1pm (UTC)", sep22),
+      Date.UTC(2026, 9, 6, 13),
+    );
+    assert.equal(
+      parseResetTimeFromText("You've hit your weekly limit · resets Oct 6 at 1pm (UTC)", sep22),
       Date.UTC(2026, 9, 6, 13),
     );
     assert.equal(
@@ -91,9 +95,13 @@ async function main() {
 
     // --- Year rollover
     const dec30 = Date.UTC(2026, 11, 30, 12);
-    assert.equal(cliResetTime(Date.UTC(2027, 0, 2, 13), "UTC", dec30), "Jan 2, 2027, 1pm (UTC)");
+    assert.match(cliResetTime(Date.UTC(2027, 0, 2, 13), "UTC", dec30), /^Jan 2, 2027(?:,| at) 1pm \(UTC\)$/);
     assert.equal(
       parseResetTimeFromText("You've hit your weekly limit · resets Jan 2, 2027, 1pm (UTC)", dec30),
+      Date.UTC(2027, 0, 2, 13),
+    );
+    assert.equal(
+      parseResetTimeFromText("You've hit your weekly limit · resets Jan 2, 2027 at 1pm (UTC)", dec30),
       Date.UTC(2027, 0, 2, 13),
     );
     assert.equal(
