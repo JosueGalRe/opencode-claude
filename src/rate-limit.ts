@@ -130,6 +130,10 @@ export function recordRateLimitInfo(info: unknown): ClaudeRateLimitState | null 
   return next;
 }
 
+export function isClaudeLongContextBillingText(text: string): boolean {
+  return /(?:extra usage|usage credits) (?:is |are )?required for (?:1m|long context)|(?:opus|sonnet) with 1m context is not available for your account/i.test(text);
+}
+
 /**
  * Match human-readable hard-limit error text from the Agent SDK / API. A bare
  * HTTP status ("API Error: 429 …") is not enough — the text has to name the
@@ -137,6 +141,7 @@ export function recordRateLimitInfo(info: unknown): ClaudeRateLimitState | null 
  * limit", "You've hit your weekly limit", "You've reached your … limit".
  */
 export function isClaudeRateLimitText(text: string): boolean {
+  if (isClaudeLongContextBillingText(text)) return false;
   return (
     /\b(hit|reached) your [^·\n]*?limit/i.test(text) ||
     /usage limit reached/i.test(text) ||

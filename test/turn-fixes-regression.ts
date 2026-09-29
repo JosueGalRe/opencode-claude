@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyClaudeFailure, resultErrorText, thrownErrorText } from "../src/failure.ts";
+import { rateLimitGate } from "../src/rate-limit.ts";
 
 const diag = "[ede_diagnostic] result_type=user stop_reason=tool_use";
 const text = (value: string) => ({
@@ -181,6 +182,24 @@ async function main() {
       assert.equal(body.error.code, "claude_extra_usage");
       assert.match(body.error.message, /Third-party apps now draw from extra usage/);
     }
+    // Given a 1M entitlement error (including a 429 wrapper); when the turn fails;
+    // then it is billing, and a later ordinary turn is not blocked by the shared gate.
+    for (const error of [
+      "Usage credits are required for long context requests.",
+      "Extra usage is required for long context",
+      ": Usage credits required for 1M context · ",
+      "Opus with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m",
+      "Sonnet with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m",
+      "API Error: 429 rate_limit_error: Usage credits are required for long context requests.",
+    ]) {
+      turn(events(result({ is_error: true, errors: [error] })));
+      const response = await post(`long-context-${error.length}`, false);
+      assert.equal(response.status, 402, error);
+      assert.equal(((await response.json()) as Body).error.code, "claude_extra_usage");
+      assert.deepEqual(rateLimitGate(), { blocked: false });
+    }
+    turn(events(text("ordinary answer"), result()));
+    assert.equal((await post("after-long-context", false)).status, 200);
   } finally {
     proxy.setClaudeQueryStarter(null);
     await proxy.stopProxy();

@@ -8,7 +8,7 @@
  * - context_overflow / image / refusal → 400; billing → 402
  * - overloaded → 503; unknown → 500
  */
-import { isClaudeRateLimitText } from "./rate-limit.js";
+import { isClaudeLongContextBillingText, isClaudeRateLimitText } from "./rate-limit.js";
 
 export type ClaudeFailureKind = "auth" | "rate_limit" | "context_overflow" | "image" | "billing" | "refusal" | "overloaded" | "unknown";
 
@@ -27,7 +27,7 @@ export function classifyClaudeFailure(text: string): ClaudeFailureKind {
   if (/^Anthropic (?:is overloaded|returned 5\d\d)\b/.test(text)) return "overloaded";
   if (isClaudeRateLimitText(text)) return "rate_limit";
   if (AUTH_FAILURE_PATTERN.test(text)) return "auth";
-  if (BILLING_FAILURE_PATTERN.test(text)) return "billing";
+  if (BILLING_FAILURE_PATTERN.test(text) || isClaudeLongContextBillingText(text)) return "billing";
   if (CONTEXT_OVERFLOW_PATTERN.test(text)) return "context_overflow";
   if (IMAGE_FAILURE_PATTERN.test(text)) return "image";
   return "unknown";
