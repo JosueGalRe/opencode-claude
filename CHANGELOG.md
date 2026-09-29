@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Long-context entitlement errors return 402 instead of a retryable error;
+  even when wrapped in a 429, they no longer block other models through the
+  global rate-limit gate.
+- Sonnet 4.6 is now offered only at 200K: its `[1m]` variant bills extra
+  usage beyond 200K. Sessions using `claude-sonnet-4-6[1m]` must re-pick a
+  model; Sonnet 5/5.5 `[1m]` offer 1M without extra usage. Opus 4.6 now has
+  both 200K and `[1m]` choices, so Pro users can select the 200K option.
+
 ## 0.15.0 - 2026-09-29
 
 ### Added

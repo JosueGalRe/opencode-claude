@@ -26,8 +26,9 @@ async function main() {
     { value: "default", resolvedModel: "claude-opus-5-5" },
     { value: "opus", resolvedModel: "claude-opus-5-5", supportedEffortLevels: ["low", "high", "invalid"] },
     { value: "claude-opus-5-5", supportedEffortLevels: ["low", "high"] },
-    { value: "claude-sonnet-5-5", displayName: "Sonnet (1M context)", supportedEffortLevels: ["medium"] },
-    { value: "claude-sonnet-4-6[1m]", supportedEffortLevels: ["high"] },
+    { value: "sonnet", resolvedModel: "claude-sonnet-5-5", displayName: "Sonnet 5.5", description: "Most efficient for simpler tasks", supportsEffort: true, supportedEffortLevels: ["medium"], supportsAdaptiveThinking: true, supportsAutoMode: true },
+    { value: "claude-sonnet-4-6", resolvedModel: "claude-sonnet-4-6", displayName: "Sonnet 4.6", description: "Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: ["high"], supportsAdaptiveThinking: true, supportsAutoMode: true },
+    { value: "claude-opus-4-6", resolvedModel: "claude-opus-4-6", displayName: "Opus 4.6", description: "Best for everyday, complex tasks", supportsEffort: true, supportedEffortLevels: ["high"], supportsAdaptiveThinking: true, supportsAutoMode: true },
     { value: "claude-opus-4-8", supportedEffortLevels: ["max"] },
     { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", supportedEffortLevels: [] },
   ];
@@ -35,16 +36,20 @@ async function main() {
   const mapped = modelsFromSdk(rows);
   assert.deepEqual(mapped.map((model) => model.id), [
     "claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-sonnet-5-5[1m]",
-    "claude-sonnet-4-6[1m]", "claude-opus-4-8", "claude-haiku-4-5-20251001",
+    "claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-6[1m]",
+    "claude-opus-4-8", "claude-haiku-4-5-20251001",
   ]);
   assert.deepEqual(mapped.map((model) => [model.name, model.contextWindow, model.inputWindow]), [
     ["Opus 5.5", 1_000_000, 900_000],
     ["Sonnet 5.5", 200_000, undefined],
     ["Sonnet 5.5 (1M)", 1_000_000, 900_000],
-    ["Sonnet 4.6", 1_000_000, 900_000],
+    ["Sonnet 4.6", 200_000, undefined],
+    ["Opus 4.6", 200_000, undefined],
+    ["Opus 4.6 (1M)", 1_000_000, 900_000],
     ["Opus 4.8", 1_000_000, 900_000],
     ["Haiku 4.5", 200_000, undefined],
   ]);
+  assert.equal(mapped.some((entry) => entry.id === "claude-sonnet-4-6[1m]"), false);
   assert.deepEqual(mapped[0]?.efforts, ["low", "high"]);
   assert.equal(mapped.at(-1)?.reasoning, false);
   assert.deepEqual(mapped.at(-1)?.efforts, []);

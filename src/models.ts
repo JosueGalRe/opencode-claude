@@ -61,9 +61,10 @@ export type SdkModelRow = {
 const ONE_M_FAMILIES: Array<{ match: RegExp; mode: "default" | "optional" | "fixed" }> = [
   { match: /^claude-fable-5/, mode: "default" },
   { match: /^claude-opus-5/, mode: "default" },
-  { match: /^claude-opus-4-6/, mode: "default" },
+  // ponytail: Opus 4.6/Sonnet 4.6 entitlement is hand-maintained from anthropics/claude-code #34773/#41121 and CC 2.1.75; revisit when Anthropic changes 1M billing.
+  { match: /^claude-opus-4-6/, mode: "optional" },
   { match: /^claude-opus-4-[78]/, mode: "fixed" },
-  { match: /^claude-sonnet-(5|4-6)/, mode: "optional" },
+  { match: /^claude-sonnet-5/, mode: "optional" },
 ];
 
 export function modelNameFromId(id: string | undefined): string | undefined {
