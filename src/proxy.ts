@@ -66,7 +66,7 @@ import {
   SESSION_HEADER,
   type ClaudeEffort,
 } from "./constants.js";
-import { startClaudeQuery, withGracefulStop } from "./query.js";
+import { forkClaudeSession, startClaudeQuery, withGracefulStop } from "./query.js";
 import {
   clearForeignSessionId,
   conversationKeyFromMessages,
@@ -75,12 +75,14 @@ import {
   getSessionBinding,
   getSessionTurns,
   historyFingerprint,
+  lastChainEntryUuid,
   matchTurnHistory,
   nonSystemMessages,
   setForeignSessionId,
   setHistoryFingerprint,
   recordTurnStart,
   rewindSessionTurns,
+  sessionChainAfterLeaf,
   sessionFileHasEntry,
   userHistoryBoundary,
 } from "./session-store.js";
@@ -200,6 +202,13 @@ export function setClaudeQueryStarter(
   starter: typeof startClaudeQuery | null,
 ): void {
   queryStarter = starter ?? startClaudeQuery;
+}
+
+/** Injectable for tests — production path always uses forkClaudeSession. */
+let sessionForker: typeof forkClaudeSession = forkClaudeSession;
+
+export function setClaudeSessionForker(forker: typeof forkClaudeSession | null): void {
+  sessionForker = forker ?? forkClaudeSession;
 }
 
 export function getClaudeProxyBaseUrl(): string {
@@ -907,10 +916,17 @@ function logPromptShape(
  * (cleanup, different machine, pruned projects dir) would silently start a
  * context-free session, so the stale binding is dropped and the caller
  * transfers the conversation history instead.
+ *
+ * `forkAt` is set when a plain resume would bring back a history OpenCode no
+ * longer has: OpenCode went back to an earlier turn (revert, edit, retry),
+ * whose undone turns descend from that turn's leaf, or another claude
+ * process left a side branch after the leaf. The CLI's resumeSessionAt
+ * can't cut there: it only searches the chain it picked and fails with "No
+ * message found". A fork cut at the leaf holds exactly our chain.
  */
 function resumableSession(conversationKey: string, priorMessages: OpenAIMessage[]): {
   resume?: string;
-  resumeSessionAt?: string;
+  forkAt?: { sessionId: string; leafUuid: string };
 } {
   const sessionId = getForeignSessionId(conversationKey);
   if (!sessionId) return {};
@@ -922,16 +938,29 @@ function resumableSession(conversationKey: string, priorMessages: OpenAIMessage[
     clearForeignSessionId(conversationKey);
     return {};
   }
+  let forkAt: { sessionId: string; leafUuid: string } | undefined;
   const match = matchTurnHistory(getSessionTurns(conversationKey), userHistoryFingerprints(priorMessages));
   switch (match.kind) {
-    case "rewind":
-      if (match.leafUuid && !sessionFileHasEntry(file, match.leafUuid)) {
+    case "rewind": {
+      // The boundary may sit in an earlier session of this chat (before a fork).
+      const source = match.sessionId ?? sessionId;
+      const sourceFile = source === sessionId ? file : findClaudeSessionFile(source);
+      if (match.leafUuid && !(sourceFile && sessionFileHasEntry(sourceFile, match.leafUuid))) {
         clearForeignSessionId(conversationKey);
         return {};
       }
-      // Restore the content checkpoint too, before the fork's DCP check.
+      // Restore the content checkpoint too, before the DCP check below.
       rewindSessionTurns(conversationKey, match.index);
+      // Nothing written after the leaf (a retry of a turn that failed before
+      // Claude wrote anything) resumes as is. No leaf (recorded before it was
+      // known) has nothing to cut at: resume the whole session.
+      if (match.leafUuid && sourceFile && !(source === sessionId &&
+          lastChainEntryUuid(sourceFile) === match.leafUuid &&
+          sessionChainAfterLeaf(sourceFile, match.leafUuid) === "clean")) {
+        forkAt = { sessionId: source, leafUuid: match.leafUuid };
+      }
       break;
+    }
     case "diverged":
       clearForeignSessionId(conversationKey);
       return {};
@@ -942,8 +971,50 @@ function resumableSession(conversationKey: string, priorMessages: OpenAIMessage[
   if (hostTranscriptWatchEnabled()) dropDivergedSession(conversationKey, priorMessages);
   const binding = getSessionBinding(conversationKey);
   if (!binding?.foreignSessionId) return {};
+  if (forkAt) return { resume: sessionId, forkAt };
   const leaf = binding.leafUuid;
-  return { resume: sessionId, resumeSessionAt: leaf && sessionFileHasEntry(file, leaf) ? leaf : undefined };
+  const state = leaf ? sessionChainAfterLeaf(file, leaf) : "missing";
+  if (leaf && state === "branched") {
+    log.info("[opencode-claude] Claude session branched after this chat's last turn; resuming through a fork", {
+      conversationKey,
+    });
+    return { resume: sessionId, forkAt: { sessionId, leafUuid: leaf } };
+  }
+  // A leaf the file no longer holds (compacted away) resumes the session as is.
+  return { resume: sessionId };
+}
+
+/**
+ * Resume through a fork cut at `forkAt`, rebinding the chat to it. A failed
+ * fork drops the binding, so the turn transfers the history instead.
+ */
+async function resumeThroughFork(
+  conversationKey: string,
+  forkAt: { sessionId: string; leafUuid: string },
+  meta: { modelId: string; cwd: string },
+): Promise<string | undefined> {
+  try {
+    const forked = await sessionForker(forkAt.sessionId, forkAt.leafUuid);
+    // Fork uuids are fresh: the current boundary moves to the fork's copy of
+    // the leaf; older ones keep pointing into their own sessions.
+    const forkFile = findClaudeSessionFile(forked);
+    setForeignSessionId(conversationKey, forked, {
+      ...meta,
+      history: getSessionBinding(conversationKey)?.history,
+      leafUuid: forkFile ? lastChainEntryUuid(forkFile) : undefined,
+    });
+    log.info("[opencode-claude] resuming a fork of the Claude session", {
+      conversationKey, from: forkAt.sessionId, fork: forked,
+    });
+    return forked;
+  } catch (error) {
+    log.warn("[opencode-claude] could not fork the Claude session; transferring history", {
+      conversationKey,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    clearForeignSessionId(conversationKey);
+    return undefined;
+  }
 }
 
 const spawnLocks = new Map<string, Promise<void>>();
@@ -1076,12 +1147,19 @@ async function handleChatCompletions(
   const refusal = await subscriptionRefusal();
   if (refusal) return errorResponse(401, "authentication_error", refusal);
 
+  const cwd =
+    process.env.OPENCODE_CLAUDE_CWD ||
+    req.headers.get(DIRECTORY_HEADER)?.trim() ||
+    process.cwd();
   // Orphaned tool results rebuild the step, not the conversation: they can
-  // still use the pinned session and carry the results in their prompt.
-  const { resume, resumeSessionAt } = isMetaRequest ? {} : resumableSession(
+  // still use the bound session and carry the results in their prompt.
+  const resumable = isMetaRequest ? {} : resumableSession(
     conversationKey,
     answeredStep ? messages.slice(0, answeredStep.assistantIndex) : priorMessages,
   );
+  const resume = resumable.forkAt
+    ? await resumeThroughFork(conversationKey, resumable.forkAt, { modelId: model, cwd })
+    : resumable.resume;
 
   // No resumable Claude session (first claude-code turn of this chat, model
   // switch mid-conversation, lost store, meta request, orphaned tool
@@ -1101,10 +1179,6 @@ async function handleChatCompletions(
   }
   const contextualPrompt = withConversationContext(prompt, transcript);
 
-  const cwd =
-    process.env.OPENCODE_CLAUDE_CWD ||
-    req.headers.get(DIRECTORY_HEADER)?.trim() ||
-    process.cwd();
   const bridgeId = randomUUID();
   // Bind the conversation to the Claude session this turn runs in, together
   // with the host history that session has now seen. SDK events all carry
@@ -1152,7 +1226,6 @@ async function handleChatCompletions(
     cwd,
     model,
     resume,
-    resumeSessionAt,
     // Meta requests force thinking off; effort "max" is rejected by the API
     // when thinking is disabled, so effort must not be forwarded there.
     effort: isMetaRequest ? undefined : selection.effort,
@@ -1821,7 +1894,7 @@ function assistantErrorText(event: Record<string, unknown>): string | null {
 
 /** claude CLI text when `resume` points at a session it cannot load. */
 const LOST_SESSION_PATTERN =
-  /no conversation found|session\b.*\bnot found|could not (?:find|load|resume).*(?:session|conversation)/i;
+  /no conversation found|no message found with message\.uuid|session\b.*\bnot found|could not (?:find|load|resume).*(?:session|conversation)/i;
 
 /**
  * A resume-target-missing error means the stored foreign session id is dead.

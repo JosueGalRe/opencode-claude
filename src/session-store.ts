@@ -43,7 +43,12 @@ export type ClaudeSessionBinding = {
    * the first user message of the latest turn delivered to it.
    */
   history?: HistoryFingerprint;
-  /** Last observed main-chain entry, not the last branch written to the file. */
+  /**
+   * Last observed main-chain entry, not the last branch written to the file.
+   * Another claude process writing the same session (a turn orphaned by an
+   * OpenCode restart) can append a branch a plain resume would follow; the
+   * resume then goes through a fork cut here (see sessionChainAfterLeaf).
+   */
   leafUuid?: string;
   turns?: TurnBoundary[];
   updatedAt: number;
@@ -55,6 +60,12 @@ export type TurnBoundary = {
   /** Covers earlier users too, including history imported in a single turn. */
   prefixHash?: string;
   leafUuid?: string;
+  /**
+   * Claude session whose file holds `leafUuid`. Boundaries survive forks and
+   * keep pointing into the session they were recorded in; ones stored
+   * without it belong to the binding's session.
+   */
+  sessionId?: string;
   /** Content checkpoint for this branch, restored when rewinding. */
   history?: HistoryFingerprint;
 };
@@ -149,12 +160,16 @@ export function setForeignSessionId(
     const previous = store[conversationKey];
     const sameSession = previous?.foreignSessionId === foreignSessionId;
     const leafUuid = meta?.leafUuid ?? (sameSession ? previous?.leafUuid : undefined);
-    const last = previous?.turns?.at(-1);
-    const turns = pendingTurns.get(conversationKey) ?? (sameSession
-      ? [...(previous?.turns ?? [])]
-      : last ? [{ ...last, leafUuid: undefined }] : []);
+    // Old boundaries stay across a session change (a fork), pointing into the
+    // session they were recorded in, so a rewind past the fork can still cut
+    // there. Untagged ones were recorded against the previous session.
+    const from = sameSession ? undefined : previous?.foreignSessionId;
+    const turns = pendingTurns.get(conversationKey) ?? (previous?.turns ?? []).map((turn) =>
+      turn.sessionId || !from ? { ...turn } : { ...turn, sessionId: from });
     const current = turns.at(-1);
-    if (current) turns[turns.length - 1] = { ...current, leafUuid };
+    if (current && (sameSession || leafUuid)) {
+      turns[turns.length - 1] = { ...current, leafUuid, ...(leafUuid ? { sessionId: foreignSessionId } : {}) };
+    }
     next = {
       conversationKey,
       foreignSessionId,
@@ -270,7 +285,7 @@ export function recordTurnStart(
     const binding = store[conversationKey];
     const turns = [...(binding?.turns ?? [])];
     if (binding && turns.length === 0 && before && before.count > 0 && !sameHistory(before, boundary)) {
-      turns.push({ ...before, leafUuid: binding.leafUuid });
+      turns.push(atLeaf(before, binding));
     }
     const last = turns.at(-1);
     // The next request supplies the completed previous turn's host output.
@@ -279,7 +294,7 @@ export function recordTurnStart(
       turns[turns.length - 1] = { ...last, history: before.history };
     }
     if (!sameHistory(last, boundary)) {
-      turns.push({ ...boundary, leafUuid: binding?.leafUuid });
+      turns.push(atLeaf(boundary, binding));
     }
     if (!binding) {
       pendingTurns.set(conversationKey, turns.slice(-MAX_TURN_BOUNDARIES));
@@ -291,6 +306,15 @@ export function recordTurnStart(
   });
 }
 
+/** A boundary at the binding's current leaf, in the session holding it. */
+function atLeaf(boundary: TurnBoundary, binding: ClaudeSessionBinding | undefined): TurnBoundary {
+  return {
+    ...boundary,
+    leafUuid: binding?.leafUuid,
+    ...(binding?.leafUuid && binding.foreignSessionId ? { sessionId: binding.foreignSessionId } : {}),
+  };
+}
+
 export function rewindSessionTurns(conversationKey: string, index: number): void {
   written.delete(conversationKey);
   updateStore((store) => {
@@ -299,7 +323,11 @@ export function rewindSessionTurns(conversationKey: string, index: number): void
     if (!target || !binding.turns) return false;
     store[conversationKey] = {
       ...binding,
-      leafUuid: target.leafUuid,
+      // A boundary in another session (before a fork) is no leaf of this
+      // one; the fork the caller cuts from it brings its own.
+      leafUuid: !target.sessionId || target.sessionId === binding.foreignSessionId
+        ? target.leafUuid
+        : undefined,
       history: target.history,
       turns: binding.turns.slice(0, index + 1),
       updatedAt: Date.now(),
@@ -311,7 +339,7 @@ export function rewindSessionTurns(conversationKey: string, index: number): void
 export type TurnHistoryMatch =
   | { kind: "untracked" }
   | { kind: "latest" }
-  | { kind: "rewind"; index: number; leafUuid?: string }
+  | { kind: "rewind"; index: number; leafUuid?: string; sessionId?: string }
   | { kind: "diverged" };
 
 export function matchTurnHistory(turns: TurnBoundary[], prints: string[]): TurnHistoryMatch {
@@ -326,10 +354,139 @@ export function matchTurnHistory(turns: TurnBoundary[], prints: string[]): TurnH
   for (let i = turns.length - 2; i >= 0; i--) {
     const turn = turns[i];
     if (turn.count === prints.length && agrees(turn.count)) {
-      return { kind: "rewind", index: i, leafUuid: turn.leafUuid };
+      return {
+        kind: "rewind", index: i, leafUuid: turn.leafUuid,
+        ...(turn.sessionId ? { sessionId: turn.sessionId } : {}),
+      };
     }
   }
   return { kind: "diverged" };
+}
+
+export type LeafChainState = "clean" | "branched" | "missing";
+
+/**
+ * Whether everything written after `leafUuid` in a Claude Code transcript
+ * continues from it. A plain resume follows the chain the file's latest
+ * last-prompt entry names; when another claude process appended a side
+ * branch after our leaf, that chain may not be ours, and the CLI's
+ * resumeSessionAt only searches the chain it picked ("No message found with
+ * message.uuid"). So:
+ * - clean: every message after the leaf descends from it; resume as is.
+ * - branched: a message after the leaf hangs off another parent, or the
+ *   last-prompt after it names an entry outside our chain; resume through
+ *   a fork cut at the leaf.
+ * - missing: the leaf isn't in the file (or the file can't be read).
+ *
+ * Only the tail after the leaf is parsed, reading backwards in chunks.
+ */
+export function sessionChainAfterLeaf(
+  file: string,
+  leafUuid: string,
+  chunkBytes = 256 * 1024,
+): LeafChainState {
+  const needle = Buffer.from(`"uuid":${JSON.stringify(leafUuid)}`);
+  let fd: number | undefined;
+  let tail: Buffer | undefined;
+  try {
+    fd = openSync(file, "r");
+    let end = fstatSync(fd).size;
+    let window = Buffer.alloc(0);
+    while (end > 0) {
+      const start = Math.max(0, end - chunkBytes);
+      const chunk = Buffer.alloc(end - start);
+      readSync(fd, chunk, 0, chunk.length, start);
+      window = Buffer.concat([chunk, window]);
+      end = start;
+      const at = window.lastIndexOf(needle);
+      if (at < 0) continue;
+      // The leaf's line starts in a chunk not read yet.
+      if (window.lastIndexOf(0x0a, at) < 0 && start > 0) continue;
+      const lineEnd = window.indexOf(0x0a, at);
+      tail = lineEnd < 0 ? Buffer.alloc(0) : window.subarray(lineEnd + 1);
+      break;
+    }
+  } catch {
+    return "missing";
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+  if (!tail) return "missing";
+  const chain = new Set([leafUuid]);
+  // Another process finishing a turn on a side branch writes a last-prompt
+  // even when its messages landed before our leaf in the file.
+  let lastPromptLeaf: string | undefined;
+  for (const line of tail.toString("utf8").split("\n")) {
+    const entry = parseEntry(line);
+    if (!entry) continue;
+    if (entry.type === "last-prompt" && typeof entry.leafUuid === "string") {
+      lastPromptLeaf = entry.leafUuid;
+      continue;
+    }
+    if (typeof entry.uuid !== "string" || entry.isSidechain === true) continue;
+    // A compaction boundary continues the chain through logicalParentUuid.
+    const parent = typeof entry.parentUuid === "string" ? entry.parentUuid
+      : typeof entry.logicalParentUuid === "string" ? entry.logicalParentUuid : undefined;
+    if (parent && chain.has(parent)) chain.add(entry.uuid);
+    else if (isChainMessage(entry)) return "branched";
+  }
+  return lastPromptLeaf && !chain.has(lastPromptLeaf) ? "branched" : "clean";
+}
+
+/**
+ * Uuid of the last conversation entry in a transcript: for a fresh fork,
+ * the copy of the entry it was cut at. Read backwards in chunks.
+ */
+export function lastChainEntryUuid(file: string, chunkBytes = 256 * 1024): string | undefined {
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "r");
+    let end = fstatSync(fd).size;
+    // Bytes before the first newline seen so far: a line not yet complete.
+    let rest = Buffer.alloc(0);
+    while (end > 0) {
+      const start = Math.max(0, end - chunkBytes);
+      const chunk = Buffer.alloc(end - start);
+      readSync(fd, chunk, 0, chunk.length, start);
+      end = start;
+      const window = Buffer.concat([chunk, rest]);
+      // Bytes before the first newline may continue in the previous chunk.
+      const cut = start > 0 ? window.indexOf(0x0a) : -1;
+      if (start > 0 && cut < 0) {
+        rest = window;
+        continue;
+      }
+      const lines = window.subarray(cut + 1).toString("utf8").split("\n");
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const entry = parseEntry(lines[i]!);
+        if (entry && typeof entry.uuid === "string" && entry.isSidechain !== true && isChainMessage(entry)) {
+          return entry.uuid;
+        }
+      }
+      rest = window.subarray(0, Math.max(cut, 0));
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+function parseEntry(line: string): Record<string, unknown> | undefined {
+  if (!line.trim()) return undefined;
+  try {
+    const entry = JSON.parse(line) as unknown;
+    return entry && typeof entry === "object" ? (entry as Record<string, unknown>) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A conversation entry: a message or a compaction boundary. */
+function isChainMessage(entry: Record<string, unknown>): boolean {
+  return entry.type === "user" || entry.type === "assistant" ||
+    (entry.type === "system" && entry.subtype === "compact_boundary");
 }
 
 /** Search backwards, carrying enough bytes to match across chunk borders. */

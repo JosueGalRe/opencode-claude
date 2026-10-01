@@ -42,8 +42,10 @@ async function main() {
       const next = await h.post(mode, { messages: history });
       await next.text();
       if (!tool) await first.text();
+      // The leaf follows the interruption entries: a plain resume, no fork.
       assert.equal(calls[0]?.resume, mode);
-      assert.equal(calls[0]?.resumeSessionAt, `${mode}-marker`);
+      assert.equal("resumeSessionAt" in calls[0]!, false);
+      assert.deepEqual(h.forks, []);
       assert.deepEqual(log, [`${mode}:interrupt`, `${mode}:close`]);
       delete process.env.OPENCODE_CLAUDE_PARKED_TURN_TTL_MS;
     }

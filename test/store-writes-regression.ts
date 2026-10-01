@@ -29,7 +29,13 @@ try {
   store.recordTurnStart("chat", { count: 2, hash: "u2" });
   store.setForeignSessionId("chat", "different-session", { cwd: "/p", modelId: "m" });
   assert.equal(store.getSessionLeafUuid("chat"), undefined);
-  assert.deepEqual(store.getSessionTurns("chat").map((turn) => turn.leafUuid), [undefined]);
+  // A new session (a fork) keeps the old boundaries, pointing into theirs.
+  assert.deepEqual(store.getSessionTurns("chat").map((turn) => `${turn.sessionId}:${turn.leafUuid}`),
+    ["session:two", "session:two"]);
+  // Its first leaf moves the current boundary into the new session.
+  store.setForeignSessionId("chat", "different-session", { cwd: "/p", modelId: "m", leafUuid: "new" });
+  assert.deepEqual(store.getSessionTurns("chat").map((turn) => `${turn.sessionId}:${turn.leafUuid}`),
+    ["session:two", "different-session:new"]);
   store.clearForeignSessionId("chat");
   store.setForeignSessionId("chat", "different-session", { cwd: "/p", modelId: "m" });
   assert.equal(store.getForeignSessionId("chat"), "different-session");

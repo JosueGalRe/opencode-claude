@@ -61,6 +61,18 @@ export async function loadClaudeAgentSdk(): Promise<SdkModule> {
   return sdkModulePromise;
 }
 
+/**
+ * Copy a Claude session's chain up to `upToMessageId` into a new session
+ * (fresh uuids, no side branches) and return its id. A plain resume of the
+ * copy sees exactly that history, wherever other branches went.
+ */
+export async function forkClaudeSession(sessionId: string, upToMessageId: string): Promise<string> {
+  const sdk = await loadClaudeAgentSdk();
+  const result = await sdk.forkSession(sessionId, { upToMessageId });
+  if (!result?.sessionId) throw new Error("forkSession returned no session id");
+  return result.sessionId;
+}
+
 export function resetClaudeAgentSdkCache(): void {
   sdkModule = null;
   sdkModulePromise = null;
@@ -179,8 +191,6 @@ export type StartClaudeQueryParams = {
   cwd: string;
   model?: string;
   resume?: string;
-  /** Resume this main-chain entry, not the latest branch in the file. */
-  resumeSessionAt?: string;
   permissionMode?: string;
   effort?: ClaudeEffort | string;
   systemPrompt?:
@@ -269,8 +279,6 @@ export async function startClaudeQuery(
 
   const resume = trimmedString(params.resume);
   if (resume) options.resume = resume;
-  const resumeSessionAt = trimmedString(params.resumeSessionAt);
-  if (resume && resumeSessionAt) options.resumeSessionAt = resumeSessionAt;
 
   const permissionMode = trimmedString(params.permissionMode);
   if (ALLOWED_PERMISSION_MODES.has(permissionMode)) {

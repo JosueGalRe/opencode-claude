@@ -22,6 +22,16 @@
   through a symlink or as an identical copy. The global
   `~/.config/opencode/AGENTS.md` and files in `instructions` still go
   (ported from upstream 1.3.4).
+- **Branched or rewound Claude sessions resume through a fork** (ported from
+  upstream 1.3.2): resume no longer uses `resumeSessionAt`, which only
+  searches the chain the CLI picked and failed every message with "No
+  message found with message.uuid" once another process left a side branch
+  in the session file. When a branch follows the chat's last entry, or a
+  revert, edit or retry goes back to an earlier turn, the session is forked
+  at that entry and the fork resumed; turn boundaries keep the session they
+  were recorded in, so rewinds work across forks. A failed fork, a missing
+  entry, or a remaining "No message found" error transfers the history as
+  text.
 
 ## 0.15.0 - 2026-09-29
 

@@ -346,14 +346,15 @@ async function main() {
     cwd: process.cwd(),
     autoCompactEnabled: false,
     resume: "session",
-    resumeSessionAt: "leaf",
     queryImpl: () => (input: { options: Record<string, unknown> }) => {
       sdkOptions = input.options;
       return (async function* () {})();
     },
   });
   assert.equal(sdkOptions!.strictMcpConfig, true);
-  assert.equal(sdkOptions!.resumeSessionAt, "leaf");
+  assert.equal(sdkOptions!.resume, "session");
+  // Branched or rewound sessions resume through a fork, never resumeSessionAt.
+  assert.equal("resumeSessionAt" in sdkOptions!, false);
   assert.deepEqual(sdkOptions!.settings, {
     disableClaudeAiConnectors: true,
     autoCompactEnabled: false,
@@ -361,7 +362,6 @@ async function main() {
   assert.equal(sdkOptions!.thinking, undefined);
   await startClaudeQuery({
     prompt: "hi", cwd: process.cwd(), effort: "medium",
-    resumeSessionAt: "ignored-without-resume",
     thinking: { type: "adaptive" },
     queryImpl: () => (input: { options: Record<string, unknown> }) => {
       sdkOptions = input.options;
@@ -369,7 +369,6 @@ async function main() {
     },
   });
   assert.deepEqual(sdkOptions!.thinking, { type: "adaptive", display: "summarized" });
-  assert.equal(sdkOptions!.resumeSessionAt, undefined);
   assert.equal((sdkOptions!.settings as Record<string, unknown>).showThinkingSummaries, undefined);
   assert.equal(sdkOptions!.extraArgs, undefined);
   await startClaudeQuery({

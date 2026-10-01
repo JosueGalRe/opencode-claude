@@ -1,4 +1,4 @@
-/** Compaction pins its synthetic summary, never its boundary or stdout replay. */
+/** Compaction's leaf is its synthetic summary, never its boundary or stdout replay. */
 import type { StartClaudeQueryParams } from "../src/query.ts";
 import { assert, assistant, mockHandle, startMockedProxy, textDelta, user } from "./helpers.ts";
 
@@ -24,8 +24,10 @@ async function main() {
     await (await h.post("chat", { messages: [user("long task")] })).text();
     assert.equal(getSessionLeafUuid("chat"), "summary");
     await (await h.post("chat", { messages: [user("long task"), assistant("partial"), user("next")] })).text();
-    assert.equal(calls.at(-1)?.resumeSessionAt, "summary");
+    // Everything after the summary descends from it: a plain resume, no fork.
     assert.equal(calls.at(-1)?.resume, "session");
+    assert.equal("resumeSessionAt" in calls.at(-1)!, false);
+    assert.deepEqual(h.forks, []);
   } finally {
     await h.cleanup();
   }

@@ -14,21 +14,21 @@ async function main() {
     return mockHandle((async function* () { yield textDelta("ok"); yield result; })());
   });
   try {
-    h.transcript("session", ["leaf", "later-orphan-branch"]);
+    h.transcript("session", ["leaf", "later-entry"]);
     store.setForeignSessionId("moved", "session", { cwd: "/old", leafUuid: "leaf" });
     const res = await h.post("moved", { messages }, { "x-opencode-claude-directory": "/new" });
     assert.equal(res.status, 200);
     await res.text();
     assert.equal(calls.at(-1)?.cwd, "/new");
     assert.equal(calls.at(-1)?.resume, "session");
-    assert.equal(calls.at(-1)?.resumeSessionAt, "leaf");
+    assert.equal("resumeSessionAt" in calls.at(-1)!, false);
     assert.doesNotMatch(String(calls.at(-1)?.prompt), /<conversation_history>/);
 
     // The stored current leaf has been compacted away: upstream plain-resume fallback.
     store.setForeignSessionId("missing-leaf", "session", { leafUuid: "gone" });
     await (await h.post("missing-leaf", { messages })).text();
     assert.equal(calls.at(-1)?.resume, "session");
-    assert.equal(calls.at(-1)?.resumeSessionAt, undefined);
+    assert.deepEqual(h.forks, []);
 
     // A pre-upgrade file has neither leaves nor boundaries nor host fingerprints.
     const dir = join(h.tmp, "opencode-claude");
@@ -38,7 +38,7 @@ async function main() {
     } }));
     await (await h.post("legacy", { messages })).text();
     assert.equal(calls.at(-1)?.resume, "session");
-    assert.equal(calls.at(-1)?.resumeSessionAt, undefined);
+    assert.deepEqual(h.forks, []);
     assert.doesNotMatch(String(calls.at(-1)?.prompt), /<conversation_history>/);
   } finally {
     await h.cleanup();

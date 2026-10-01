@@ -27,20 +27,40 @@ export async function startMockedProxy(label: string) {
       },
       body: JSON.stringify({ model: "sonnet", stream: false, ...body }),
     });
+  // Main-chain entries as the CLI writes them, each a child of the one before.
   const transcript = (session: string, leaves: string[]) => {
     const dir = join(tmp, "claude", "projects", "original-project");
     mkdirSync(dir, { recursive: true });
     const file = join(dir, `${session}.jsonl`);
-    writeFileSync(file, leaves.map((uuid) => JSON.stringify({ uuid })).join("\n") + "\n");
+    writeFileSync(file, leaves.map((uuid, i) =>
+      JSON.stringify({ type: "assistant", uuid, parentUuid: leaves[i - 1] ?? null })).join("\n") + "\n");
     return file;
   };
+  // Forks copy the chain up to the cut with fresh uuids (`<fork>-<uuid>`).
+  const forks: string[] = [];
+  const chains = new Map<string, string[]>();
+  const forker = async (id: string, at: string) => {
+    const fork = `fork-${forks.length + 1}`;
+    forks.push(`${id}@${at}`);
+    const source = chains.get(id) ?? [];
+    chains.set(fork, source.slice(0, source.indexOf(at) + 1).map((uuid) => `${fork}-${uuid}`));
+    transcript(fork, chains.get(fork)!);
+    return fork;
+  };
+  /** Append to a session's chain, keeping the forker's copy source in sync. */
+  const append = (session: string, ...uuids: string[]) => {
+    chains.set(session, [...(chains.get(session) ?? []), ...uuids]);
+    return transcript(session, chains.get(session)!);
+  };
+  proxy.setClaudeSessionForker(forker);
   const cleanup = async () => {
     proxy.setClaudeQueryStarter(null);
+    proxy.setClaudeSessionForker(null);
     await proxy.stopProxy();
     setAuthStatusProbe(null);
     rmSync(tmp, { recursive: true, force: true });
   };
-  return { tmp, post, proxy, transcript, cleanup };
+  return { tmp, post, proxy, transcript, append, forks, cleanup };
 }
 
 export const user = (content: unknown) => ({ role: "user", content });
