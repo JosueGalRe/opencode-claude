@@ -9,6 +9,19 @@
   usage beyond 200K. Sessions using `claude-sonnet-4-6[1m]` must re-pick a
   model; Sonnet 5/5.5 `[1m]` offer 1M without extra usage. Opus 4.6 now has
   both 200K and `[1m]` choices, so Pro users can select the 200K option.
+- OpenCode V2 2.0.19+ context forwarding: V2 now renders the Code Mode
+  catalog, MCP notes, skills and `Instructions from:` blocks before the date
+  and `<env>`, so all of them were dropped and only plugin additions reached
+  Claude. The stock model/date/env sections are now stripped wherever they
+  sit, including the "is now" updates V2 sends as later system messages.
+  The Code Mode catalog ends with its tool listing, whatever follows it
+  (upstream #35).
+- Instruction files Claude Code loads itself are no longer forwarded twice:
+  `~/.claude/CLAUDE.md` and, in the working directory and its parents,
+  `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md` and `AGENTS.md`, also
+  through a symlink or as an identical copy. The global
+  `~/.config/opencode/AGENTS.md` and files in `instructions` still go
+  (ported from upstream 1.3.4).
 
 ## 0.15.0 - 2026-09-29
 

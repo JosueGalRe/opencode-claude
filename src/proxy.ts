@@ -1175,7 +1175,7 @@ async function handleChatCompletions(
     // checks are skipped; anything else is denied without prompting.
     permissionMode: bridged ? "bypassPermissions" : "dontAsk",
     allowDangerouslySkipPermissions: bridged,
-    systemPrompt: turnSystemPrompt(metaKind, messages, bridged ? toolNames : null),
+    systemPrompt: turnSystemPrompt(metaKind, messages, bridged ? toolNames : null, cwd),
   }));
   turn.attach(handle);
 
