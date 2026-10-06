@@ -57,7 +57,7 @@ async function main() {
     assert.deepEqual(matchTurnHistory(boundaries, ["h1"]), { kind: "rewind", index: 0, leafUuid: "L1" });
     assert.deepEqual(matchTurnHistory([{ ...boundaries[0]!, sessionId: "s0" }, boundaries[1]!], ["h1"]),
       { kind: "rewind", index: 0, leafUuid: "L1", sessionId: "s0" });
-    assert.deepEqual(matchTurnHistory(boundaries, ["h1", "h2", "h3"]), { kind: "latest" });
+    assert.deepEqual(matchTurnHistory(boundaries, ["h1", "h2", "h3"]), { kind: "latest", count: 2 });
     assert.deepEqual(matchTurnHistory(boundaries, ["edited", "h2"]), { kind: "diverged" });
 
     const first = [user("u1"), assistant("a1")];

@@ -7,8 +7,8 @@
  * - a V2 generate request runs single-shot and unsaved, even with a session;
  * - an OpenCode system-prompt change does not drop the session;
  * - sessions.json is written once per turn, not once per stream event;
- * - turns answered by another provider force a rebuild, while normal turns,
- *   steering and promoted tool media do not;
+ * - turns answered by another provider reach the resumed session as missed
+ *   turns, while normal turns, steering and promoted tool media carry none;
  * - tool results with no parked turn reach Claude instead of re-running the
  *   original instruction;
  * - promoted tool-result media rides the tool resolved in this request;
@@ -279,7 +279,7 @@ async function main() {
     assert.equal(writes, 1, `store rewritten ${writes} times in one turn`);
     script = textTurn;
 
-    // --- Turns answered by another provider force a rebuild. ---
+    // --- Turns answered by another provider reach the resumed session. ---
     await turn("foreign", [user("u1")]);
     await turn("foreign", [user("u1"), assistant("a1"), user("u2")]);
     assert.equal(calls.at(-1)!.resume, SESSION_ID, "normal next turn resumes");
@@ -292,8 +292,9 @@ async function main() {
       assistant("other-provider-answer"),
       user("u4"),
     ]);
-    assert.equal(calls.at(-1)!.resume, undefined, "foreign turn drops resume");
-    assert.match(calls.at(-1)!.prompt, /other-provider-answer/);
+    assert.equal(calls.at(-1)!.resume, SESSION_ID, "foreign turns keep the session");
+    assert.match(calls.at(-1)!.prompt, /after your last turn[\s\S]*u3[\s\S]*other-provider-answer/);
+    assert.doesNotMatch(calls.at(-1)!.prompt, /\ba1\b/);
     await turn("foreign", [
       user("u1"),
       assistant("a1"),

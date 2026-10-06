@@ -424,14 +424,30 @@ export function withoutSystemReminders<T extends { role?: string; content?: unkn
 
 /** User identities only; tool media, reminders and attachment encoding do not count. */
 export function userHistoryFingerprints(messages: Array<{ role?: string; content?: unknown }>): string[] {
-  const prints: string[] = [];
+  return fingerprintedUsers(messages).map((user) => user.print);
+}
+
+/**
+ * What a history holds after its first `count` fingerprinted user messages,
+ * from the next one on: what came after a turn boundary of `count` users.
+ */
+export function historyAfterUserCount<T extends { role?: string; content?: unknown }>(
+  messages: T[],
+  count: number,
+): T[] {
+  const next = fingerprintedUsers(messages)[count];
+  return next ? messages.slice(next.index) : [];
+}
+
+function fingerprintedUsers(messages: Array<{ role?: string; content?: unknown }>): Array<{ index: number; print: string }> {
+  const users: Array<{ index: number; print: string }> = [];
   for (const [i, msg] of messages.entries()) {
     if (msg.role !== "user" || isPromotedToolMedia(msg, messages[i - 1])) continue;
     const text = extractTextContent(msg.content).replace(SYSTEM_REMINDER_BLOCK, " ").replace(/\s+/g, " ").trim();
     const identity = text || (contentHasAttachments(msg.content) ? "\u0000attachments" : "");
-    if (identity) prints.push(createHash("sha1").update(identity).digest("hex").slice(0, 16));
+    if (identity) users.push({ index: i, print: createHash("sha1").update(identity).digest("hex").slice(0, 16) });
   }
-  return prints;
+  return users;
 }
 
 export function openaiContentToAnthropicBlocks(
@@ -766,15 +782,23 @@ export function buildConversationTranscript(
 export function withConversationContext(
   prompt: string | SdkUserPrompt,
   transcript: string,
+  /** The transcript holds only turns a resumed session never saw. */
+  missed = false,
 ): string | SdkUserPrompt {
   const body = transcript.trim();
   if (!body) return prompt;
+  const intro = missed
+    ? "These messages were added to this chat after your last turn, without you " +
+      "(for example, the user switched to another model for them). Treat them as part " +
+      "of the conversation — do not re-do completed work — and respond to the user's " +
+      "latest message, which follows them.\n\n"
+    : "The earlier conversation of this chat is included below because the previous " +
+      "Claude session could not be resumed. Treat it as established context — do not " +
+      "re-do completed work — and respond to the user's latest message, which follows " +
+      "the history.\n\n";
   const prefix =
     "<conversation_history>\n" +
-    "The earlier conversation of this chat is included below because the previous " +
-    "Claude session could not be resumed. Treat it as established context — do not " +
-    "re-do completed work — and respond to the user's latest message, which follows " +
-    "the history.\n\n" +
+    intro +
     body +
     "\n</conversation_history>\n\nLatest user message:\n";
   if (typeof prompt === "string") {

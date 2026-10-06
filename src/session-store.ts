@@ -338,7 +338,8 @@ export function rewindSessionTurns(conversationKey: string, index: number): void
 
 export type TurnHistoryMatch =
   | { kind: "untracked" }
-  | { kind: "latest" }
+  /** `count`: users of the newest boundary; what follows them, the session never saw. */
+  | { kind: "latest"; count: number }
   | { kind: "rewind"; index: number; leafUuid?: string; sessionId?: string }
   | { kind: "diverged" };
 
@@ -350,7 +351,7 @@ export function matchTurnHistory(turns: TurnBoundary[], prints: string[]): TurnH
   const agrees = (count: number) => turns.every((turn) =>
     turn.count > count || (prints[turn.count - 1] === turn.hash &&
       (!turn.prefixHash || turn.prefixHash === userHistoryBoundary(prints.slice(0, turn.count))?.prefixHash)));
-  if (prints.length >= latest.count && agrees(latest.count)) return { kind: "latest" };
+  if (prints.length >= latest.count && agrees(latest.count)) return { kind: "latest", count: latest.count };
   for (let i = turns.length - 2; i >= 0; i--) {
     const turn = turns[i];
     if (turn.count === prints.length && agrees(turn.count)) {

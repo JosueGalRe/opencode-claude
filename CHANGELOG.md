@@ -45,6 +45,10 @@
   (10 s) after the last plugin instance left, so the fresh copy resumes
   them; quitting OpenCode still closes their CLIs. A rebuilt tool step
   tells Claude an interruption came from the plugin, not the user.
+- **Switching a chat to another model and back keeps the Claude session**
+  (ported from upstream 1.3.7): the turns the other model answered used to
+  drop the session and send the whole history as text. Now the session
+  resumes and gets only the turns it missed, with the new message.
 
 ## 0.15.0 - 2026-09-29
 

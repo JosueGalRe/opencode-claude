@@ -106,6 +106,7 @@ import {
   openaiContentToAnthropicBlocks,
   openaiToolResultToMcpContent,
   priorMessagesOf,
+  historyAfterUserCount,
   promptAsStream,
   userHistoryFingerprints,
   withoutSystemReminders,
@@ -809,7 +810,9 @@ function turnResponse(
  * - host-side history rewrites (context-pruning plugins like DCP, message
  *   transforms): the prefix the session saw no longer hashes the same;
  * - turns answered by another provider (the user switched the OpenCode
- *   session away and back): user turns answered after that prefix.
+ *   session away and back): user turns answered after that prefix. Only a
+ *   legacy binding without turn boundaries drops for that; otherwise the
+ *   resumed session gets those turns with the prompt (see resumableSession).
  * Either way drop the binding so the turn transfers the host's history
  * instead of resuming.
  */
@@ -821,11 +824,14 @@ function dropDivergedSession(
   const seen = binding?.history;
   if (!binding?.foreignSessionId || !seen) return;
   const history = nonSystemMessages(withoutSystemReminders(priorMessages));
+  // With turn boundaries, turns another provider answered reach Claude as
+  // missed turns of the resumed session; a legacy binding without them can't
+  // tell where they start.
   const divergence =
     history.length < seen.count ||
     historyFingerprint(history.slice(0, seen.count)).hash !== seen.hash
       ? "host rewrote conversation history"
-      : answeredElsewhere(history.slice(seen.count))
+      : !binding.turns?.length && answeredElsewhere(history.slice(seen.count))
         ? "another provider answered turns of this conversation"
         : null;
   if (!divergence) return;
@@ -973,10 +979,15 @@ function logPromptShape(
  * process left a side branch after the leaf. The CLI's resumeSessionAt
  * can't cut there: it only searches the chain it picked and fails with "No
  * message found". A fork cut at the leaf holds exactly our chain.
+ *
+ * `latestCount` is the size of the newest turn boundary when the history
+ * still holds it: whatever OpenCode added after those users (turns another
+ * model answered) the session never saw.
  */
 function resumableSession(conversationKey: string, priorMessages: OpenAIMessage[]): {
   resume?: string;
   forkAt?: { sessionId: string; leafUuid: string };
+  latestCount?: number;
 } {
   const sessionId = getForeignSessionId(conversationKey);
   if (!sessionId) return {};
@@ -1022,16 +1033,17 @@ function resumableSession(conversationKey: string, priorMessages: OpenAIMessage[
   const binding = getSessionBinding(conversationKey);
   if (!binding?.foreignSessionId) return {};
   if (forkAt) return { resume: sessionId, forkAt };
+  const latestCount = match.kind === "latest" ? match.count : undefined;
   const leaf = binding.leafUuid;
   const state = leaf ? sessionChainAfterLeaf(file, leaf) : "missing";
   if (leaf && state === "branched") {
     log.info("[opencode-claude] Claude session branched after this chat's last turn; resuming through a fork", {
       conversationKey,
     });
-    return { resume: sessionId, forkAt: { sessionId, leafUuid: leaf } };
+    return { resume: sessionId, forkAt: { sessionId, leafUuid: leaf }, latestCount };
   }
   // A leaf the file no longer holds (compacted away) resumes the session as is.
-  return { resume: sessionId };
+  return { resume: sessionId, latestCount };
 }
 
 /**
@@ -1216,18 +1228,24 @@ async function handleChatCompletions(
   // results): serialize the prior OpenCode messages into the prompt so Claude
   // sees the whole conversation. Orphaned tool results carry their own step
   // in the prompt, so the history stops before it.
-  const transferredHistory = answeredStep
-    ? messages.slice(0, answeredStep.assistantIndex)
-    : priorMessages;
-  const transcript = resume ? "" : buildConversationTranscript(transferredHistory);
+  // A resumed session gets only the turns it missed, if any: another model
+  // answered them. A rebuilt tool step continues Claude's own turn.
+  const history = !resume
+    ? answeredStep ? messages.slice(0, answeredStep.assistantIndex) : priorMessages
+    : !answeredStep && resumable.latestCount !== undefined
+      ? historyAfterUserCount(priorMessages, resumable.latestCount)
+      : [];
+  const transcript = buildConversationTranscript(history);
   if (transcript) {
-    log.info("[opencode-claude] injecting transferred conversation history", {
+    log.info(resume
+      ? "[opencode-claude] injecting turns the resumed Claude session missed"
+      : "[opencode-claude] injecting transferred conversation history", {
       conversationKey,
       transcriptChars: transcript.length,
-      historyMessages: transferredHistory.length,
+      historyMessages: history.length,
     });
   }
-  const contextualPrompt = withConversationContext(prompt, transcript);
+  const contextualPrompt = withConversationContext(prompt, transcript, Boolean(resume));
 
   const bridgeId = randomUUID();
   // Bind the conversation to the Claude session this turn runs in, together
