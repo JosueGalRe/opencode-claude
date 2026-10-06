@@ -25,8 +25,43 @@ export type ParkedBridge = {
   resume: () => AsyncGenerator<unknown, void, unknown>;
 };
 
-const bridges = new Map<string, ParkedBridge>();
-const stopping = new Map<string, Set<Promise<void>>>();
+/**
+ * Turns live in the process, not in a copy of this module. OpenCode reloads
+ * a plugin (dist rebuilt, config changed, idle location torn down) by
+ * unloading its copy and importing a fresh one; a turn parked on a tool must
+ * survive that and be resumed by whichever copy receives its results. Bump
+ * the key's version when ParkedBridge changes shape: a reload across that
+ * change then starts with a fresh pool instead of misreading old turns.
+ */
+type BridgeRuntime = {
+  bridges: Map<string, ParkedBridge>;
+  stopping: Map<string, Set<Promise<void>>>;
+  /** Plugin instances holding the proxy, across every copy of the module. */
+  holders: number;
+  /** Stop of every turn, scheduled after the last instance released. */
+  shutdownTimer?: ReturnType<typeof setTimeout>;
+  exitHook?: boolean;
+};
+
+const RUNTIME_KEY = Symbol.for("@josuegalre/opencode-claude/bridge-runtime/v1");
+
+export const bridgeRuntime: BridgeRuntime = ((globalThis as Record<symbol, unknown>)[RUNTIME_KEY] ??= {
+  bridges: new Map(),
+  stopping: new Map(),
+  holders: 0,
+}) as BridgeRuntime;
+
+const bridges = bridgeRuntime.bridges;
+const stopping = bridgeRuntime.stopping;
+
+// A quitting OpenCode doesn't wait out the reload grace period: close the
+// CLIs, so none keeps writing to a session nobody resumes (a side branch).
+if (!bridgeRuntime.exitHook) {
+  bridgeRuntime.exitHook = true;
+  process.once("exit", () => {
+    for (const id of [...bridges.keys()]) deleteBridge(id);
+  });
+}
 
 export function putBridge(bridge: ParkedBridge): void {
   // Starts are serialized and stop the previous writer before spawning.

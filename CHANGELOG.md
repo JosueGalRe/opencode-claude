@@ -36,6 +36,15 @@
   notes, which it adds to every request even without setting sources: a
   title could name an unrelated project from them. Chat turns keep them
   (ported from upstream 1.3.6).
+- **Turns survive a plugin reload** (ported from upstream 1.3.5): OpenCode
+  reloads the plugin by unloading its copy and importing a fresh one (a
+  rebuilt `dist`, a `package.json` write, an idle location closing). The
+  unload stopped every turn waiting on a tool, which the CLI recorded as
+  rejected by the user, and Claude stopped mid-command. Waiting turns now
+  live in the process and stop only `OPENCODE_CLAUDE_RELOAD_GRACE_MS`
+  (10 s) after the last plugin instance left, so the fresh copy resumes
+  them; quitting OpenCode still closes their CLIs. A rebuilt tool step
+  tells Claude an interruption came from the plugin, not the user.
 
 ## 0.15.0 - 2026-09-29
 

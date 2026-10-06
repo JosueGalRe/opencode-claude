@@ -22,6 +22,7 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import {
+  bridgeRuntime,
   clearAllBridges,
   findBridgeByConversation,
   findBridgeByPendingTool,
@@ -436,29 +437,75 @@ export async function startProxy(): Promise<number> {
   }
 }
 
-// The listener is process-wide; an idle location must not stop another's turn.
+/**
+ * Every OpenCode location runs its own plugin instance; OpenCode tears idle
+ * locations down every few minutes and reloads a plugin by unloading its
+ * copy, then importing a fresh one. Instances hold a reference. A copy stops
+ * its own listener once none of its instances is left. Parked turns live in
+ * the process (see bridgeRuntime) and stop only a grace period after the
+ * last instance of any copy released, so a reload, whose fresh copy arrives
+ * right after the old one left, picks up a turn still waiting on a tool.
+ */
 let proxyHolders = 0;
 
+function reloadGraceMs(): number {
+  const raw = Number(process.env.OPENCODE_CLAUDE_RELOAD_GRACE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 10_000;
+}
+
 export async function acquireProxy(): Promise<number> {
-  const port = await startProxy();
-  proxyHolders++;
-  return port;
+  bridgeRuntime.holders++;
+  if (bridgeRuntime.shutdownTimer) {
+    clearTimeout(bridgeRuntime.shutdownTimer);
+    bridgeRuntime.shutdownTimer = undefined;
+  }
+  try {
+    const port = await startProxy();
+    proxyHolders++;
+    return port;
+  } catch (err) {
+    releaseTurns();
+    throw err;
+  }
 }
 
 export async function releaseProxy(): Promise<void> {
   if (proxyHolders === 0) return;
-  if (--proxyHolders === 0) await stopProxy();
+  // A response still streaming from this copy finishes first.
+  if (--proxyHolders === 0) stopListener(false);
+  releaseTurns();
 }
 
-export async function stopProxy(): Promise<void> {
+function releaseTurns(): void {
+  bridgeRuntime.holders = Math.max(0, bridgeRuntime.holders - 1);
+  if (bridgeRuntime.holders > 0 || bridgeRuntime.shutdownTimer) return;
+  const timer = setTimeout(() => {
+    if (bridgeRuntime.shutdownTimer !== timer) return;
+    bridgeRuntime.shutdownTimer = undefined;
+    if (bridgeRuntime.holders === 0) void clearAllBridges();
+  }, reloadGraceMs());
+  // Never keeps a quitting OpenCode alive (bridge-pool closes the CLIs on exit).
+  timer.unref?.();
+  bridgeRuntime.shutdownTimer = timer;
+}
+
+function stopListener(closeActiveConnections = true): void {
   stopSiblingWatch();
-  // Parked turns each hold a live claude CLI child; nothing resumes them now.
-  await clearAllBridges();
   if (server) {
-    server.stop(true);
+    server.stop(closeActiveConnections);
     server = null;
   }
   proxyPort = null;
+}
+
+export async function stopProxy(): Promise<void> {
+  if (bridgeRuntime.shutdownTimer) {
+    clearTimeout(bridgeRuntime.shutdownTimer);
+    bridgeRuntime.shutdownTimer = undefined;
+  }
+  // Parked turns each hold a live claude CLI child; nothing resumes them now.
+  await clearAllBridges();
+  stopListener();
 }
 
 function errorResponse(status: number, type: string, message: string): Response {
@@ -667,12 +714,15 @@ function answeredToolStepPrompt(
       userBlocks.push(...openaiContentToAnthropicBlocks(msg.content));
     }
   }
+  // The CLI records the calls of a stopped turn as rejected by the user.
+  const notStopped =
+    "If your session shows these calls as rejected, or the request as interrupted by the user, that came from the plugin (a reload, or a wait that timed out), not from the user: nobody asked you to stop.";
   content.push({
     type: "text",
     text:
       userBlocks.length > 0
-        ? "</tool_results>\n\nThe user sent the following after those calls. Respond to it with the results in mind:"
-        : "</tool_results>\n\nContinue the task from these results.",
+        ? `</tool_results>\n\n${notStopped} The user sent the following after those calls. Respond to it with the results in mind:`
+        : `</tool_results>\n\n${notStopped} Continue the task from these results.`,
   });
   content.push(...userBlocks);
   return {
