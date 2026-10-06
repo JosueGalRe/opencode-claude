@@ -999,6 +999,11 @@ async function main() {
       );
       assert.deepEqual(titleOptions!.tools, []);
       assert.deepEqual(titleOptions!.settingSources, []);
+      // The user's Claude Code memory stays out of utility turns.
+      assert.equal(
+        (titleOptions!.env as Record<string, unknown>).CLAUDE_CODE_DISABLE_AUTO_MEMORY,
+        "1",
+      );
       assert.deepEqual(titleOptions!.skills, []);
       assert.equal(titleOptions!.maxTurns, 1);
       assert.equal(titleOptions!.autoCompactEnabled, false);

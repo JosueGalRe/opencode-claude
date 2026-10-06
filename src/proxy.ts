@@ -1229,7 +1229,13 @@ async function handleChatCompletions(
     // Meta requests force thinking off; effort "max" is rejected by the API
     // when thinking is disabled, so effort must not be forwarded there.
     effort: isMetaRequest ? undefined : selection.effort,
-    env: buildClaudeCodeChildEnv(),
+    env: {
+      ...buildClaudeCodeChildEnv(),
+      // Claude Code adds the user's auto-memory index to every turn, even with
+      // no setting sources. In a utility turn it leaks into the output: a title
+      // came back naming an unrelated project from a memory line.
+      ...(isMetaRequest ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } : {}),
+    },
     mcpServers,
     autoCompactEnabled: !isMetaRequest,
     maxTurns: isMetaRequest ? 1 : undefined,

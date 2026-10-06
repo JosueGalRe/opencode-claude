@@ -331,6 +331,8 @@ async function main() {
   try {
     const on = await send("sysctx-on");
     assert.equal(on.preset, "claude_code");
+    // Chat turns keep the user's Claude Code memory; only utility turns drop it.
+    assert.equal((seen!.env as Record<string, unknown>).CLAUDE_CODE_DISABLE_AUTO_MEMORY, undefined);
     assert.match(on.append ?? "", /mcp__opencode__/);
     assert.match(on.append ?? "", /harsh reviewer/);
     assert.match(on.append ?? "", /Run tests sequentially/);

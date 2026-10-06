@@ -32,6 +32,10 @@
   were recorded in, so rewinds work across forks. A failed fork, a missing
   entry, or a remaining "No message found" error transfers the history as
   text.
+- Titles and other utility turns run without Claude Code's auto-memory
+  notes, which it adds to every request even without setting sources: a
+  title could name an unrelated project from them. Chat turns keep them
+  (ported from upstream 1.3.6).
 
 ## 0.15.0 - 2026-09-29
 
