@@ -191,6 +191,15 @@ export type StartClaudeQueryParams = {
   cwd: string;
   model?: string;
   resume?: string;
+  /**
+   * With `resume` and `forkSession`: an in-memory copy cut at this entry.
+   * Only for a summary on a chain checked clean after the cut: on a branched
+   * file the CLI fails with "No message found" (chats resume through
+   * forkClaudeSession instead).
+   */
+  resumeSessionAt?: string;
+  /** With `resume`: continue in a new session id instead of appending. */
+  forkSession?: boolean;
   permissionMode?: string;
   effort?: ClaudeEffort | string;
   systemPrompt?:
@@ -278,7 +287,12 @@ export async function startClaudeQuery(
   if (model) options.model = model;
 
   const resume = trimmedString(params.resume);
-  if (resume) options.resume = resume;
+  if (resume) {
+    options.resume = resume;
+    const resumeAt = trimmedString(params.resumeSessionAt);
+    if (resumeAt) options.resumeSessionAt = resumeAt;
+    if (params.forkSession === true) options.forkSession = true;
+  }
 
   const permissionMode = trimmedString(params.permissionMode);
   if (ALLOWED_PERMISSION_MODES.has(permissionMode)) {

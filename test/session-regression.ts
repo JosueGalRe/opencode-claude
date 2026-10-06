@@ -1,7 +1,8 @@
 /**
  * Regression: Claude session reuse across turns.
- * - a second compaction still transfers the conversation (meta requests
- *   neither resume nor bind sessions);
+ * - a compaction reads an in-memory fork of the chat's session, and a second
+ *   one, with no session left, transfers the conversation (meta requests
+ *   bind no sessions);
  * - a V2 compaction (request-kind header) that lands mid-turn closes the
  *   parked turn and runs single-shot, whatever its wording;
  * - a V2 generate request runs single-shot and unsaved, even with a session;
@@ -47,7 +48,7 @@ type Completion = {
     };
   }>;
 };
-type Call = { resume?: string; prompt: string; maxTurns?: number; persistSession?: boolean };
+type Call = { resume?: string; prompt: string; maxTurns?: number; persistSession?: boolean; forkSession?: boolean };
 type Script = (
   params: StartClaudeQueryParams,
   closed: Promise<void>,
@@ -123,6 +124,7 @@ async function main() {
       prompt: await promptText(params.prompt),
       maxTurns: params.maxTurns,
       persistSession: params.persistSession,
+      forkSession: params.forkSession,
     });
     const closed = Promise.withResolvers<void>();
     const handle: ClaudeQueryHandle = {
@@ -186,7 +188,8 @@ async function main() {
   });
 
   try {
-    // --- Second compaction still transfers the conversation. ---
+    // --- A compaction reads the chat's session; a second one, with no
+    // session left, transfers the conversation. ---
     await turn("compact", [user("one")]);
     const summarySystem = {
       role: "system",
@@ -194,8 +197,10 @@ async function main() {
     };
     const summaryAsk = user("Create a detailed summary for continuing this coding session.");
     await turn("compact", [summarySystem, user("one"), assistant("alpha-answer"), summaryAsk]);
-    assert.equal(calls.at(-1)!.resume, undefined);
-    assert.match(calls.at(-1)!.prompt, /alpha-answer/);
+    assert.equal(calls.at(-1)!.resume, SESSION_ID, "the first summary reads the chat's session");
+    assert.equal(calls.at(-1)!.forkSession, true);
+    assert.equal(calls.at(-1)!.persistSession, false);
+    assert.doesNotMatch(calls.at(-1)!.prompt, /alpha-answer/);
     await turn("compact", [
       summarySystem,
       user("one"),
@@ -247,7 +252,9 @@ async function main() {
     assert.equal(compactRes.status, 200, await compactRes.clone().text());
     const compacted = (await compactRes.json()) as Completion;
     assert.equal(compacted.choices[0].message.content, "ok", "summary, not the parked tool call");
-    assert.equal(calls.at(-1)!.maxTurns, 1, "single-shot meta request");
+    // It reads the chat's session; a refused tool call gets one more turn.
+    assert.equal(calls.at(-1)!.persistSession, false, "one-shot meta request");
+    assert.equal(calls.at(-1)!.maxTurns, 2);
     assert.ok(parkedClosed, "parked turn closed");
 
     // --- System prompt changes (model/agent/date) keep the session. ---

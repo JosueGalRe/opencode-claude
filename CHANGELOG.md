@@ -49,6 +49,15 @@
   (ported from upstream 1.3.7): the turns the other model answered used to
   drop the session and send the whole history as text. Now the session
   resumes and gets only the turns it missed, with the new message.
+- **Compaction summaries cover the whole chat** (ported from upstream
+  1.3.5): a summary read a text copy of the chat cut to 400k characters,
+  with every tool result cut to 1000, so on long 1M chats it missed most of
+  the conversation, uncached. It now resumes an in-memory fork of the chat's
+  Claude session, cut where OpenCode's summarized part ends, with the chat
+  turn's model, system prompt and tools, so it reads full tool results
+  mostly from the prompt cache; nothing is written to the session. Without
+  a session it can cut, or on a branched transcript, it reads the history
+  as text sized to the model's window.
 
 ## 0.15.0 - 2026-09-29
 

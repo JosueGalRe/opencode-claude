@@ -51,7 +51,7 @@ import {
 } from "./model-selection.js";
 import { resolveClaudeModelId } from "./models.js";
 import { collectSteeringText, withSteering } from "./steering.js";
-import { turnSystemPrompt } from "./system-context.js";
+import { turnSystemPrompt, type ClaudeCodePreset } from "./system-context.js";
 import {
   bridgedToolAliases,
   bridgedToolName,
@@ -1094,6 +1094,85 @@ async function acquireSpawnLock(key: string): Promise<() => void> {
   };
 }
 
+/** What a chat's last turn sent Claude, so its summary can hit the same cache. */
+type ChatTurnProfile = {
+  systemPrompt: ClaudeCodePreset | string;
+  tools: OpenAITool[];
+  effort?: ClaudeEffort;
+};
+
+// ponytail: per module copy, so a reload drops them; the summary then
+// rebuilds the prompt from its own request, which usually matches anyway.
+const chatTurnProfiles = new Map<string, ChatTurnProfile>();
+const MAX_CHAT_TURN_PROFILES = 64;
+
+function rememberChatTurn(conversationKey: string, profile: ChatTurnProfile): void {
+  // Most recent last; long-idle chats fall off.
+  chatTurnProfiles.delete(conversationKey);
+  if (chatTurnProfiles.size >= MAX_CHAT_TURN_PROFILES) {
+    chatTurnProfiles.delete(chatTurnProfiles.keys().next().value!);
+  }
+  chatTurnProfiles.set(conversationKey, profile);
+}
+
+/** Where in the chat's Claude session a compaction summary picks up. */
+type SummaryResumePoint = {
+  sessionId: string;
+  /** The entry the summarized part ends at; undefined resumes the whole session. */
+  leafUuid?: string;
+  /** Index of OpenCode's summary prompt in the request. */
+  promptIndex: number;
+  profile?: ChatTurnProfile;
+};
+
+/** V2's reminder after a summary reply that missed the template. */
+const SUMMARY_NUDGE_MARKER = "did not fill in the required summary template";
+
+/**
+ * OpenCode summarizes the older part of a chat: the request is that part,
+ * then its summary prompt (plus a nudge after a reply that missed the
+ * template). The chat's Claude session already holds that part with every
+ * tool result in full, so the summary resumes it at the turn boundary where
+ * the part ends. Null when the session can't be cut there (no binding, a
+ * history that doesn't line up, a branched transcript): the summary then
+ * reads the history as text.
+ */
+function summaryResumePoint(chatKey: string, messages: OpenAIMessage[]): SummaryResumePoint | null {
+  const binding = getSessionBinding(chatKey);
+  if (!binding?.foreignSessionId) return null;
+  const users = messages.flatMap((msg, i) => (msg?.role === "user" ? [i] : []));
+  let promptIndex = users.at(-1);
+  if (promptIndex === undefined) return null;
+  if (users.length > 1 && extractTextContent(messages[promptIndex]!.content).includes(SUMMARY_NUDGE_MARKER)) {
+    promptIndex = users.at(-2)!;
+  }
+  const turns = binding.turns ?? [];
+  const prints = userHistoryFingerprints(messages.slice(0, promptIndex));
+  const match = matchTurnHistory(turns, prints);
+  let sessionId = binding.foreignSessionId;
+  let leafUuid = binding.leafUuid;
+  if (match.kind === "rewind" && match.leafUuid) {
+    sessionId = match.sessionId ?? sessionId;
+    leafUuid = match.leafUuid;
+  } else if (!(match.kind === "latest" && match.count === prints.length)) {
+    return null;
+  }
+  const file = findClaudeSessionFile(sessionId);
+  if (!file) return null;
+  // resumeSessionAt only finds the cut on the chain the CLI picks.
+  if (leafUuid && sessionChainAfterLeaf(file, leafUuid) !== "clean") return null;
+  return { sessionId, leafUuid, promptIndex, profile: chatTurnProfiles.get(chatKey) };
+}
+
+/**
+ * Text budget for a summary that reads the history as text: about three
+ * characters per token of the chat model's window. OpenCode already sized
+ * the request to that window, so this only guards against a runaway one.
+ */
+function summaryHistoryMaxChars(model: string): number {
+  return (/\[1m\]$/i.test(model) ? 1_000_000 : 200_000) * 3;
+}
+
 async function handleChatCompletions(
   req: Request,
   body: ChatCompletionRequest,
@@ -1114,12 +1193,22 @@ async function handleChatCompletions(
   const conversationKey = requestKeyNamespace(metaKind) + baseConversationKey;
   const releaseSpawnLock = await acquireSpawnLock(metaKind === "summary" ? baseConversationKey : conversationKey);
   try {
+  let summaryResume: SummaryResumePoint | null = null;
   if (metaKind === "summary") {
     // OpenCode has compacted its history; resuming the old Claude session
     // would restore the pre-compaction context, so the next normal turn must
-    // rebuild from the (already compacted) host array instead.
+    // rebuild from the (already compacted) host array instead. The summary
+    // itself reads that session one last time, from an in-memory copy.
     await stopConversationBridges(baseConversationKey);
+    summaryResume = summaryResumePoint(baseConversationKey, messages);
+    log.info(summaryResume
+      ? "[opencode-claude] summarizing from the chat's Claude session"
+      : "[opencode-claude] summarizing from the history text; the chat's Claude session can't be resumed at the summarized part", {
+      conversationKey: baseConversationKey,
+      cachedProfile: Boolean(summaryResume?.profile),
+    });
     clearForeignSessionId(baseConversationKey);
+    chatTurnProfiles.delete(baseConversationKey);
   }
   const selection = selectionFromRequest(req, body);
   const model = resolveClaudeModelId(selection.modelId);
@@ -1164,7 +1253,9 @@ async function handleChatCompletions(
     );
   }
 
-  const openCodeTools = Array.isArray(body.tools) ? body.tools : [];
+  const requestTools = Array.isArray(body.tools) ? body.tools : [];
+  // A resumed summary repeats the tools of the chat turn it continues.
+  const openCodeTools = summaryResume?.profile?.tools ?? requestTools;
   log.info("[opencode-claude] chat completions", {
     conversationKey,
     sessionHeader,
@@ -1176,9 +1267,11 @@ async function handleChatCompletions(
 
   const prompt = answeredStep
     ? answeredToolStepPrompt(messages, answeredStep)
-    : latestUserPrompt(messages.slice(priorMessages.length));
+    : summaryResume
+      ? latestUserPrompt(messages.slice(summaryResume.promptIndex, summaryResume.promptIndex + 1))
+      : latestUserPrompt(messages.slice(priorMessages.length));
   logPromptShape(prompt, messages);
-  if (prompt === "" && openCodeTools.length === 0) {
+  if (prompt === "" && requestTools.length === 0) {
     return errorResponse(400, "invalid_request_error", "No user message found");
   }
 
@@ -1219,9 +1312,9 @@ async function handleChatCompletions(
     conversationKey,
     answeredStep ? messages.slice(0, answeredStep.assistantIndex) : priorMessages,
   );
-  const resume = resumable.forkAt
+  const resume = summaryResume?.sessionId ?? (resumable.forkAt
     ? await resumeThroughFork(conversationKey, resumable.forkAt, { modelId: model, cwd })
-    : resumable.resume;
+    : resumable.resume);
 
   // No resumable Claude session (first claude-code turn of this chat, model
   // switch mid-conversation, lost store, meta request, orphaned tool
@@ -1235,7 +1328,11 @@ async function handleChatCompletions(
     : !answeredStep && resumable.latestCount !== undefined
       ? historyAfterUserCount(priorMessages, resumable.latestCount)
       : [];
-  const transcript = buildConversationTranscript(history);
+  // A summary that can't resume gets the history sized to the chat model's
+  // window: OpenCode already fit the request to it.
+  const transcript = !resume && metaKind === "summary"
+    ? buildConversationTranscript(history, summaryHistoryMaxChars(model))
+    : buildConversationTranscript(history);
   if (transcript) {
     log.info(resume
       ? "[opencode-claude] injecting turns the resumed Claude session missed"
@@ -1260,7 +1357,10 @@ async function handleChatCompletions(
   // built, refuse the turn: falling back to Claude Code's native Bash/Edit
   // would bypass the permissions the user configured in OpenCode.
   const bridged = !isMetaRequest && openCodeTools.length > 0;
-  const mcpServers = bridged
+  // A resumed summary lists the chat's tools too, so its request matches the
+  // chat's cached prefix; it is allowed none of them (dontAsk below).
+  const toolsListed = (bridged || !!summaryResume) && openCodeTools.length > 0;
+  const mcpServers = toolsListed
     ? await buildOpenCodeMcpServer(openCodeTools, turn.pendingTools, turn.notifyPark)
     : undefined;
   if (bridged && !mcpServers) {
@@ -1275,7 +1375,14 @@ async function handleChatCompletions(
       { code: "OPENCODE_TOOL_BRIDGE_UNAVAILABLE", statusCode: 503 },
     );
   }
-  const toolNames = bridged ? openCodeToolNames(openCodeTools) : [];
+  const toolNames = mcpServers ? openCodeToolNames(openCodeTools) : [];
+  const systemPrompt = summaryResume
+    ? summaryResume.profile?.systemPrompt ??
+      turnSystemPrompt(null, messages, toolNames.length ? toolNames : null, cwd)
+    : turnSystemPrompt(metaKind, messages, bridged ? toolNames : null, cwd);
+  if (!isMetaRequest) {
+    rememberChatTurn(conversationKey, { systemPrompt, tools: openCodeTools, effort: selection.effort });
+  }
 
   // Persist before spawning: a store failure must not leak an unpublished
   // Claude process. A failed spawn keeps the previous leaf for its retry.
@@ -1294,35 +1401,45 @@ async function handleChatCompletions(
     cwd,
     model,
     resume,
-    // Meta requests force thinking off; effort "max" is rejected by the API
-    // when thinking is disabled, so effort must not be forwarded there.
-    effort: isMetaRequest ? undefined : selection.effort,
+    // A summary continues an in-memory fork of the chat's Claude session,
+    // cut where OpenCode's summarized part ends. It repeats the chat turn's
+    // system prompt, tools, thinking and setting sources, so it reads the
+    // conversation from the prompt cache; nothing is written to the session.
+    ...(summaryResume ? { resumeSessionAt: summaryResume.leafUuid, forkSession: true } : {}),
+    // Other meta requests force thinking off; effort "max" is rejected by the
+    // API when thinking is disabled, so effort must not be forwarded there.
+    effort: summaryResume
+      ? summaryResume.profile?.effort ?? selection.effort
+      : isMetaRequest ? undefined : selection.effort,
     env: {
       ...buildClaudeCodeChildEnv(),
       // Claude Code adds the user's auto-memory index to every turn, even with
       // no setting sources. In a utility turn it leaks into the output: a title
-      // came back naming an unrelated project from a memory line.
-      ...(isMetaRequest ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } : {}),
+      // came back naming an unrelated project from a memory line. A summary
+      // that resumes the chat keeps it, like the chat turn it continues.
+      ...(isMetaRequest && !summaryResume ? { CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1" } : {}),
     },
     mcpServers,
     autoCompactEnabled: !isMetaRequest,
-    maxTurns: isMetaRequest ? 1 : undefined,
-    // Meta requests never resume; saving them would fill `claude --resume`
-    // with one-shot title/summary sessions.
+    // A resumed summary's tool call is refused, so one more turn lets
+    // Claude write the summary after it.
+    maxTurns: summaryResume ? 2 : isMetaRequest ? 1 : undefined,
+    // Meta requests never resume their own session; saving them would fill
+    // `claude --resume` with one-shot title/summary sessions.
     persistSession: isMetaRequest ? false : undefined,
-    thinking: isMetaRequest ? { type: "disabled" } : undefined,
-    settingSources: isMetaRequest ? [] : undefined,
-    skills: isMetaRequest ? [] : undefined,
+    thinking: isMetaRequest && !summaryResume ? { type: "disabled" } : undefined,
+    settingSources: isMetaRequest && !summaryResume ? [] : undefined,
+    skills: isMetaRequest && !summaryResume ? [] : undefined,
     // Claude Code's built-in tools are never enabled: bridged turns use the
     // mcp__opencode__* tools, and meta or tool-less agent turns are text-only.
     tools: [],
-    toolAliases: bridged ? bridgedToolAliases(toolNames) : undefined,
+    toolAliases: mcpServers ? bridgedToolAliases(toolNames) : undefined,
     allowedTools: bridged ? toolNames.map(bridgedToolName) : undefined,
     // Bridged calls are gated by OpenCode's permission prompts, so Claude-side
     // checks are skipped; anything else is denied without prompting.
     permissionMode: bridged ? "bypassPermissions" : "dontAsk",
     allowDangerouslySkipPermissions: bridged,
-    systemPrompt: turnSystemPrompt(metaKind, messages, bridged ? toolNames : null, cwd),
+    systemPrompt,
   }));
   turn.attach(handle);
 
