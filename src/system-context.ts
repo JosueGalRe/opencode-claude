@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   metaInstructions,
   metaSystemPrompt,
@@ -62,6 +62,41 @@ function claudeCodeInstructionFiles(cwd: string): string[] {
   }
 }
 
+/** Claude Code follows `@path` imports up to four hops deep. */
+const IMPORT_DEPTH = 4;
+/** An `@path` import: at the start of a line or after whitespace; `\ ` keeps a space. */
+const IMPORT = /(?<=^|\s)@((?:\\ |\S)+)/g;
+
+/** Files `text` imports: `~/` is the home directory, relative paths are from `file`. Not in code. */
+function importsOf(file: string, text: string): string[] {
+  const prose = text.replace(/```[\s\S]*?(?:```|$)/g, "").replace(/`[^`\n]*`/g, "");
+  return [...prose.matchAll(IMPORT)].map((match) => {
+    let target = match[1]!.replace(/\\ /g, " ");
+    if (target === "~" || target.startsWith("~/")) target = join(homedir(), target.slice(1));
+    return isAbsolute(target) ? target : join(dirname(file), target);
+  });
+}
+
+/** `files` plus what their `@path` imports pull in, as Claude Code expands them. */
+function withImports(files: string[]): string[] {
+  const out = [...files];
+  const seen = new Set(files.map(realPath));
+  const walk = (file: string, depth: number) => {
+    if (depth > IMPORT_DEPTH) return;
+    const text = readText(file);
+    if (!text) return;
+    for (const target of importsOf(file, text)) {
+      const real = realPath(target);
+      if (seen.has(real)) continue;
+      seen.add(real);
+      out.push(target);
+      walk(target, depth + 1);
+    }
+  };
+  for (const file of files) walk(file, 1);
+  return out;
+}
+
 function readText(path: string): string | undefined {
   try {
     return readFileSync(path, "utf8");
@@ -80,13 +115,13 @@ function realPath(path: string): string {
 
 /**
  * Drop "Instructions from: <path>" blocks Claude Code already loads (the
- * same file, through a symlink too, or the same text), so their rules don't
- * arrive twice. A block is cut only where its text still matches the file;
- * anything else is forwarded.
+ * same file, through a symlink or an `@path` import too, or the same text),
+ * so their rules don't arrive twice. A block is cut only where its text
+ * still matches the file; anything else is forwarded.
  */
 function withoutClaudeCodeInstructions(rest: string, cwd: string): string {
   if (!rest.includes("Instructions from: ")) return rest;
-  const own = claudeCodeInstructionFiles(cwd);
+  const own = withImports(claudeCodeInstructionFiles(cwd));
   const ownPaths = new Set(own.map(realPath));
   const ownTexts = new Set(own.map((file) => readText(file)?.trim()).filter(Boolean));
   let out = rest;

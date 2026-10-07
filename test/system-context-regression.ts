@@ -226,6 +226,22 @@ async function main() {
   assert.doesNotMatch(deduped, /Project agents rules|Second paragraph|Project Claude rules|Global Claude rules/);
   assert.doesNotMatch(deduped, /project\/AGENTS\.md|linked\.md|copy\.md|\n{3,}/);
   assert.match(openCodeSystemContext(withFiles), /Second paragraph[\s\S]*Global Claude rules/);
+
+  // A CLAUDE.md that `@path`-imports a file (nested, `~/`-free here) makes
+  // Claude Code load it; an import inside a code span is only text.
+  mkdirSync(join(files, "imports"));
+  write(join(files, "imports", "chain-b.md"), "Chained rules.\n");
+  write(join(files, "imports", "chain-a.md"), "See @./chain-b.md for the chain.\n");
+  const chained = write(join(files, "chained.md"), "Chained rules.\n");
+  const literal = write(join(files, "literal.md"), "Literal rules.\n");
+  write(join(files, "claude", "CLAUDE.md"),
+    `@${global}\n\n- chain @${join(files, "imports", "chain-a.md")}\n- literal \`@${literal}\`\n`);
+  const imported = openCodeSystemContext([
+    { role: "system", content: "You are an AI agent running in OpenCode." },
+    { role: "system", content: `# Your Model\n- Name: X\n\n${[block(global, "Call me Bryan."), block(chained, "Chained rules."), block(literal, "Literal rules.")].join("\n\n")}\n\nHere is some useful information about the environment you are running in:\n<env>\n</env>` },
+  ], join(project, "sub"));
+  assert.doesNotMatch(imported, /Call me Bryan|Chained rules/);
+  assert.match(imported, /Instructions from: [^\n]*literal\.md\nLiteral rules\./);
   delete process.env.CLAUDE_CONFIG_DIR;
 
   // V2 custom agent: its prompt replaces the stock opener and is forwarded.

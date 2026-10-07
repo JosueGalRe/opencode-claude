@@ -21,7 +21,8 @@
   `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md` and `AGENTS.md`, also
   through a symlink or as an identical copy. The global
   `~/.config/opencode/AGENTS.md` and files in `instructions` still go
-  (ported from upstream 1.3.4).
+  (ported from upstream 1.3.4), unless one of those files `@path`-imports
+  them, which Claude Code expands itself (ported from upstream 1.3.8).
 - **Branched or rewound Claude sessions resume through a fork** (ported from
   upstream 1.3.2): resume no longer uses `resumeSessionAt`, which only
   searches the chain the CLI picked and failed every message with "No
