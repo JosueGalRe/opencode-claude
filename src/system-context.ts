@@ -199,7 +199,20 @@ export type ClaudeCodePreset = {
   type: "preset";
   preset: "claude_code";
   append?: string;
+  excludeDynamicSections?: boolean;
 };
+
+/**
+ * Claude Code puts the working directory, memory path and git status into its
+ * system prompt, so no two sessions share it and every new session (each
+ * subagent too) writes the whole prompt to the cache again. Without them the
+ * prompt is the same everywhere and a new session reads it from the cache;
+ * Claude Code passes them in the first user message instead.
+ * OPENCODE_CLAUDE_DYNAMIC_SECTIONS=keep restores the old layout.
+ */
+function excludeDynamicSections(): boolean {
+  return (process.env.OPENCODE_CLAUDE_DYNAMIC_SECTIONS ?? "").trim().toLowerCase() !== "keep";
+}
 
 /**
  * Meta turns need none of Claude Code's coding instructions. A non-preset
@@ -232,7 +245,13 @@ export function turnSystemPrompt(
       metaInstructions(metaKind, V2_MODEL_MARKER.test(system) ? "" : system),
     ].join("\n\n");
   }
-  const preset: ClaudeCodePreset = { type: "preset", preset: "claude_code" };
+  // Part of the chat turn's remembered prompt, so a summary that resumes the
+  // chat repeats it and still reads from the cache.
+  const preset: ClaudeCodePreset = {
+    type: "preset",
+    preset: "claude_code",
+    ...(excludeDynamicSections() ? { excludeDynamicSections: true } : {}),
+  };
   const forwardContext = systemContextForwardingEnabled();
   const context = forwardContext
     ? openCodeSystemContext(messages, cwd)

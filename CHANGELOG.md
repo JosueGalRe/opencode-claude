@@ -58,6 +58,13 @@
   mostly from the prompt cache; nothing is written to the session. Without
   a session it can cut, or on a branched transcript, it reads the history
   as text sized to the model's window.
+- **New sessions start from the prompt cache** (ported from upstream
+  1.3.8): Claude Code's system prompt carried the working directory, memory
+  path and git status, so every new chat and every subagent wrote all of it
+  to the cache again. Chat turns now pass `excludeDynamicSections`, which
+  moves those details to the first message. Open chats rewrite their cache
+  once after the update. `OPENCODE_CLAUDE_DYNAMIC_SECTIONS=keep` restores
+  the old layout.
 
 ## 0.15.0 - 2026-09-29
 

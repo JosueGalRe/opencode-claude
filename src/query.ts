@@ -204,7 +204,13 @@ export type StartClaudeQueryParams = {
   effort?: ClaudeEffort | string;
   systemPrompt?:
     | string
-    | { type: "preset"; preset: "claude_code"; append?: string };
+    | {
+        type: "preset";
+        preset: "claude_code";
+        append?: string;
+        /** Move cwd, memory path and git status to the first user message. */
+        excludeDynamicSections?: boolean;
+      };
   canUseTool?: (
     toolName: string,
     input: Record<string, unknown>,
@@ -351,9 +357,11 @@ export async function startClaudeQuery(
       type: "preset";
       preset: "claude_code";
       append?: string;
+      excludeDynamicSections?: boolean;
     } = { type: "preset", preset: "claude_code" };
     const append = trimmedString(presetSystemPrompt.append);
     if (append) systemPrompt.append = append;
+    if (presetSystemPrompt.excludeDynamicSections === true) systemPrompt.excludeDynamicSections = true;
     options.systemPrompt = systemPrompt;
   } else {
     options.systemPrompt = { type: "preset", preset: "claude_code" };
