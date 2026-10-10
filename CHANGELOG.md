@@ -8,6 +8,9 @@
   V2 models no longer set an input limit; V1 keeps it.
 - Tool results in a history sent as text name their tool instead of an
   opaque call id (ported from upstream 1.4.0).
+- Sonnet 5.5 and Haiku 5.5 are listed before the CLI reports its models, so
+  a session on them doesn't ask to pick a model again on a cold start
+  (ported from upstream 1.4.0). Haiku 5.5 is listed at 200K for now.
 
 - Long-context entitlement errors return 402 instead of a retryable error;
   even when wrapped in a 429, they no longer block other models through the

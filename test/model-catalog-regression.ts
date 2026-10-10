@@ -16,6 +16,10 @@ async function main() {
   // Given no cache and no CLI; when discovery fails; then concrete fallback is served.
   const fallback = getClaudeModels();
   assert.ok(fallback.some((model) => model.id === "claude-haiku-4-5"));
+  // A session on a current model doesn't have to re-pick it on a cold start.
+  for (const id of ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]", "claude-haiku-5-5"]) {
+    assert.ok(fallback.some((model) => model.id === id), id);
+  }
   assert.ok(fallback.every((model) => model.id.startsWith("claude-")));
   const now = Date.now();
   assert.equal(await refreshClaudeModels(async () => null, now), false);
