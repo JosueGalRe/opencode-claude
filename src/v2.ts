@@ -101,9 +101,10 @@ function toModelInfo(definition: ClaudeModel): Model.Info {
     cost: [],
     status: "active",
     enabled: true,
+    // No input limit: V2 compacts at (input || context) minus 10% on its own
+    // (2.0.19+), so a 900k input compacted 1M chats at 81%, not 90%.
     limit: {
       context: definition.contextWindow,
-      ...(definition.inputWindow ? { input: definition.inputWindow } : {}),
       output: definition.maxTokens,
     },
   };

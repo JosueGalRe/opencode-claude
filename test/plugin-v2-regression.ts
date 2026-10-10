@@ -151,7 +151,9 @@ async function main() {
     assert.equal(models.length, getClaudeModels().length);
     const sonnet = models.find((m) => m.id === "claude-sonnet-5-5[1m]");
     assert.ok(sonnet);
-    assert.equal(sonnet.limit.input, 900_000);
+    assert.equal(sonnet.limit.context, 1_000_000);
+    // V2 keeps 10% free itself; an input limit on top compacted at 81%.
+    assert.equal("input" in sonnet.limit, false);
     assert.equal(sonnet.limit.output, 128_000);
     assert.deepEqual(
       sonnet.capabilities.input,

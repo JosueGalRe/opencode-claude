@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **1M chats compact at 90% on V2, not 81%** (ported from upstream 1.4.0):
+  the V2 provider set a 900k input limit on 1M models, and OpenCode 2.0.19+
+  keeps 10% of that free on its own, so 1M chats compacted around 810k. The
+  V2 models no longer set an input limit; V1 keeps it.
+
 - Long-context entitlement errors return 402 instead of a retryable error;
   even when wrapped in a 429, they no longer block other models through the
   global rate-limit gate.
