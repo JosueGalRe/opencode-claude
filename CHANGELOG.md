@@ -11,6 +11,9 @@
 - Sonnet 5.5 and Haiku 5.5 are listed before the CLI reports its models, so
   a session on them doesn't ask to pick a model again on a cold start
   (ported from upstream 1.4.0). Haiku 5.5 is listed at 200K for now.
+- A signed-out Claude Code says to run `claude auth login` and send the
+  message again; restarting OpenCode isn't needed (ported from upstream
+  1.3.9).
 
 - Long-context entitlement errors return 402 instead of a retryable error;
   even when wrapped in a 429, they no longer block other models through the
