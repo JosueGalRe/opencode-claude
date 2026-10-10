@@ -6,6 +6,8 @@
   the V2 provider set a 900k input limit on 1M models, and OpenCode 2.0.19+
   keeps 10% of that free on its own, so 1M chats compacted around 810k. The
   V2 models no longer set an input limit; V1 keeps it.
+- Tool results in a history sent as text name their tool instead of an
+  opaque call id (ported from upstream 1.4.0).
 
 - Long-context entitlement errors return 402 instead of a retryable error;
   even when wrapped in a 429, they no longer block other models through the

@@ -588,8 +588,14 @@ async function main() {
       { role: "tool", tool_call_id: "c1", content: "x".repeat(5000) },
     ]);
     assert.match(withTools, /\[called tool: bash\]/);
-    assert.match(withTools, /Tool result/);
+    // OpenCode's tool messages carry only the call id; the result is named
+    // after the assistant's call.
+    assert.match(withTools, /Tool result \(bash\)/);
     assert.match(withTools, /chars omitted/);
+    assert.match(
+      buildConversationTranscript([{ role: "tool", tool_call_id: "orphan", content: "out" }]),
+      /Tool result \(orphan\)/,
+    );
 
     // budget keeps the NEWEST messages, drops oldest first
     const tight = buildConversationTranscript(
