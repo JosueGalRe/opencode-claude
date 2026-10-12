@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Opus 5.5's update before a tool call shows as a message, not thinking**:
+  Opus 5.5 sends it as a second thinking block whose signature is tagged
+  `narration`, so it landed in the Thinking panel. Thinking blocks after the
+  first are now held until their signature arrives and narration goes out
+  as text; the first block still streams live as reasoning.
 - **1M chats compact at 90% on V2, not 81%** (ported from upstream 1.4.0):
   the V2 provider set a 900k input limit on 1M models, and OpenCode 2.0.19+
   keeps 10% of that free on its own, so 1M chats compacted around 810k. The

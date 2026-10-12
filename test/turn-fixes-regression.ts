@@ -17,19 +17,28 @@ const stop = (reason: string, parent_tool_use_id: string | null = null) => ({
   event: { type: "message_delta", delta: { stop_reason: reason }, usage: { output_tokens: 1 } },
 });
 const result = (more: Record<string, unknown> = {}) => ({ type: "result", is_error: false, usage: {}, ...more });
+const block = (index: number, event: Record<string, unknown>) => ({ type: "stream_event", event: { index, ...event } });
+const thinkingBlock = (index: number, value: string, tag: string) => [
+  block(index, { type: "content_block_start", content_block: { type: "thinking", thinking: "", signature: "" } }),
+  block(index, { type: "content_block_delta", delta: { type: "thinking_delta", thinking: value } }),
+  block(index, { type: "content_block_delta", delta: { type: "signature_delta", signature: Buffer.from(`\x08\x04B\t${tag}`).toString("base64") } }),
+  block(index, { type: "content_block_stop" }),
+];
 
-type Choice = { finish_reason?: string | null; delta?: { reasoning_content?: string }; message?: { reasoning_content?: string } };
+type Choice = { finish_reason?: string | null; delta?: { reasoning_content?: string; content?: string }; message?: { reasoning_content?: string; content?: string } };
 type Body = { error: { message: string; type: string; code: string }; choices: Choice[] };
-function sse(s: string): { finish: string | null; reasoning: string } {
+function sse(s: string): { finish: string | null; reasoning: string; content: string } {
   let finish: string | null = null;
   let reasoning = "";
+  let content = "";
   for (const line of s.split("\n")) {
     if (!line.startsWith("data: {")) continue;
     const choice = (JSON.parse(line.slice(6)) as { choices?: Choice[] }).choices?.[0];
     if (choice?.finish_reason) finish = choice.finish_reason;
     reasoning += choice?.delta?.reasoning_content ?? "";
+    content += choice?.delta?.content ?? "";
   }
-  return { finish, reasoning };
+  return { finish, reasoning, content };
 }
 
 async function main() {
@@ -137,6 +146,23 @@ async function main() {
     assert.equal(notices.match(/Context nearly full/g)?.length, 1);
     assert.match(notices, /Stop hook warning/);
     assert.doesNotMatch(notices, /UI tip/);
+
+    // When: Opus 5.5 sends its pre-tool update as a narration-signed thinking block.
+    for (const stream of [true, false]) {
+      turn(events(...thinkingBlock(0, "plan", "narration"), ...thinkingBlock(1, "Voy a probar Waze.", "narration"),
+        ...thinkingBlock(2, " later", "thinking"), result()));
+      const res = await post(`narration-${stream}`, stream);
+      let out: { content?: string; reasoning?: string };
+      if (stream) {
+        const { content, reasoning } = sse(await res.text());
+        out = { content, reasoning };
+      } else {
+        const message = ((await res.json()) as Body).choices[0]?.message;
+        out = { content: message?.content, reasoning: message?.reasoning_content };
+      }
+      // Block 0 streams live as reasoning whatever its tag; only later blocks are held.
+      assert.deepEqual(out, { content: "Voy a probar Waze.", reasoning: "plan later" });
+    }
 
     // When: CLI exhausts 5xx retries but labels an empty result success.
     for (const stream of [true, false]) {
