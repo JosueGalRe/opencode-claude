@@ -1188,8 +1188,11 @@ async function handleChatCompletions(
         : detectMetaRequestKind(messages);
   const isMetaRequest = metaKind !== null;
   const sessionHeader = req.headers.get(SESSION_HEADER);
+  // A title or generate call without a session belongs to no chat: keyed
+  // by its prompt, concurrent calls sharing a preamble stopped each other.
+  const standalone = !sessionHeader && (metaKind === "title" || metaKind === "generate");
   const baseConversationKey =
-    sessionHeader || conversationKeyFromMessages(messages);
+    sessionHeader || (standalone ? `req_${randomUUID()}` : conversationKeyFromMessages(messages));
   const conversationKey = requestKeyNamespace(metaKind) + baseConversationKey;
   const releaseSpawnLock = await acquireSpawnLock(metaKind === "summary" ? baseConversationKey : conversationKey);
   try {

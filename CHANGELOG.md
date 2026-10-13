@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Parallel generate calls no longer cancel each other** (ported from
+  upstream 1.4.1): a title or generate call without a session was keyed by
+  the first 200 characters of its prompt, so plugins running several
+  `generate.text` calls with the same instructions got "ended the turn
+  without any output" on all but one. Each such call now gets its own key,
+  and the V2 hook no longer sends a session header when there is no session.
 - **Haiku 5.5 has its full 1M window** (ported from upstream 1.4.1): it was
   listed at 200K and compacted early. The CLI's model registry marks it
   native 1M (no `[1m]` variant), like Opus 4.8.

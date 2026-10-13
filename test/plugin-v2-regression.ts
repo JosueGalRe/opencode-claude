@@ -189,6 +189,10 @@ async function main() {
     assert.equal(event.headers[DIRECTORY_HEADER], "/work/project");
     assert.equal(event.headers[PROXY_TOKEN_HEADER], token);
     assert.equal(event.headers[REQUEST_KIND_HEADER], "compaction");
+    // A stateless generate call has no session: no header, not "undefined".
+    const generate = { ...event, sessionID: undefined, kind: "generate", headers: {} as Record<string, string> };
+    await onModelRequest!(generate as unknown as typeof event);
+    assert.equal(SESSION_HEADER in generate.headers, false);
 
     // The token is what the live proxy demands: a V2 request shaped like the
     // host's (marker bearer + hook headers) is admitted, one without the
