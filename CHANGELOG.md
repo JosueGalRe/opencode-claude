@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Compaction no longer tells Claude you rejected its tool calls** (ported
+  from upstream 1.4.1): compacting a chat stops its parked turn, and the CLI
+  records the pending calls as rejected and the request as interrupted by
+  the user. The summary resumed after those entries and could pass that on
+  as your decision. Its prompt now says the plugin stopped the turn and
+  relays the results OpenCode already has for that step.
 - **Works as root** (ported from upstream 1.4.1): turns with OpenCode tools
   ran Claude Code with `bypassPermissions`, which the CLI refuses as root.
   They now use `dontAsk` with the bridged tools allowed; anything else is

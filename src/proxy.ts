@@ -677,13 +677,74 @@ function answeredToolStepPrompt(
   messages: OpenAIMessage[],
   step: AnsweredToolStep,
 ): SdkUserPrompt {
-  const assistant = messages[step.assistantIndex];
+  const { blocks, userBlocks } = toolStepBlocks(messages, step);
   const content: AnthropicContentBlock[] = [
     {
       type: "text",
       text: "<tool_results>\nYour previous step called the tools below, but the session that made those calls ended before OpenCode returned their results. They are relayed here. Do not repeat a call unless its result requires it.",
     },
+    ...blocks,
   ];
+  // The CLI records the calls of a stopped turn as rejected by the user.
+  const notStopped =
+    "If your session shows these calls as rejected, or the request as interrupted by the user, that came from the plugin (a reload, or a wait that timed out), not from the user: nobody asked you to stop.";
+  content.push({
+    type: "text",
+    text:
+      userBlocks.length > 0
+        ? `</tool_results>\n\n${notStopped} The user sent the following after those calls. Respond to it with the results in mind:`
+        : `</tool_results>\n\n${notStopped} Continue the task from these results.`,
+  });
+  content.push(...userBlocks);
+  return {
+    type: "user",
+    message: { role: "user", content },
+    parent_tool_use_id: null,
+  };
+}
+
+/**
+ * The summary of a chat whose parked turn the plugin stopped to compact it.
+ * The CLI recorded the turn's pending calls as rejected and the request as
+ * interrupted by the user; the summary must not pass that on as the user's
+ * decision. Results OpenCode already has for that step are relayed.
+ */
+function withStoppedTurnNote(prompt: string | SdkUserPrompt, history: OpenAIMessage[]): SdkUserPrompt {
+  const step = collectAnsweredToolStep(history);
+  const { blocks } = step ? toolStepBlocks(history, step) : { blocks: [] };
+  const note: AnthropicContentBlock[] = [
+    {
+      type: "text",
+      text:
+        "<host_note>\nYour turn was stopped by the plugin so OpenCode could compact this chat. If your session shows your last tool calls as rejected, or the request as interrupted by the user, that came from the plugin, not from the user: nobody rejected anything or asked you to stop. Do not record it as a user decision; treat those calls as unfinished unless a result is relayed below." +
+        (blocks.length > 0 ? "\n\nResults OpenCode received for that step:" : ""),
+    },
+    ...blocks,
+    { type: "text", text: "</host_note>" },
+  ];
+  const content =
+    typeof prompt === "string"
+      ? [{ type: "text" as const, text: prompt }]
+      : Array.isArray(prompt.message.content)
+        ? prompt.message.content
+        : [{ type: "text" as const, text: prompt.message.content }];
+  return {
+    type: "user",
+    message: { role: "user", content: [...note, ...content] },
+    parent_tool_use_id: null,
+  };
+}
+
+/**
+ * A tool step as content blocks: the step's text, each call with its full
+ * result and media. User messages sent after the calls come separately.
+ */
+function toolStepBlocks(
+  messages: OpenAIMessage[],
+  step: AnsweredToolStep,
+): { blocks: AnthropicContentBlock[]; userBlocks: AnthropicContentBlock[] } {
+  const assistant = messages[step.assistantIndex];
+  const content: AnthropicContentBlock[] = [];
   const stepText = extractTextContent(assistant.content).trim();
   if (stepText) {
     content.push({ type: "text", text: `Your message in that step:\n${stepText}` });
@@ -715,22 +776,7 @@ function answeredToolStepPrompt(
       userBlocks.push(...openaiContentToAnthropicBlocks(msg.content));
     }
   }
-  // The CLI records the calls of a stopped turn as rejected by the user.
-  const notStopped =
-    "If your session shows these calls as rejected, or the request as interrupted by the user, that came from the plugin (a reload, or a wait that timed out), not from the user: nobody asked you to stop.";
-  content.push({
-    type: "text",
-    text:
-      userBlocks.length > 0
-        ? `</tool_results>\n\n${notStopped} The user sent the following after those calls. Respond to it with the results in mind:`
-        : `</tool_results>\n\n${notStopped} Continue the task from these results.`,
-  });
-  content.push(...userBlocks);
-  return {
-    type: "user",
-    message: { role: "user", content },
-    parent_tool_use_id: null,
-  };
+  return { blocks: content, userBlocks };
 }
 
 /**
@@ -1123,6 +1169,11 @@ type SummaryResumePoint = {
   /** Index of OpenCode's summary prompt in the request. */
   promptIndex: number;
   profile?: ChatTurnProfile;
+  /**
+   * The plugin stopped the chat's parked turn for this compaction and the
+   * summary resumes after it, where the CLI recorded the stop as the user's.
+   */
+  afterStoppedTurn?: boolean;
 };
 
 /** V2's reminder after a summary reply that missed the template. */
@@ -1137,7 +1188,11 @@ const SUMMARY_NUDGE_MARKER = "did not fill in the required summary template";
  * history that doesn't line up, a branched transcript): the summary then
  * reads the history as text.
  */
-function summaryResumePoint(chatKey: string, messages: OpenAIMessage[]): SummaryResumePoint | null {
+function summaryResumePoint(
+  chatKey: string,
+  messages: OpenAIMessage[],
+  stoppedTurn: boolean,
+): SummaryResumePoint | null {
   const binding = getSessionBinding(chatKey);
   if (!binding?.foreignSessionId) return null;
   const users = messages.flatMap((msg, i) => (msg?.role === "user" ? [i] : []));
@@ -1161,7 +1216,14 @@ function summaryResumePoint(chatKey: string, messages: OpenAIMessage[]): Summary
   if (!file) return null;
   // resumeSessionAt only finds the cut on the chain the CLI picks.
   if (leafUuid && sessionChainAfterLeaf(file, leafUuid) !== "clean") return null;
-  return { sessionId, leafUuid, promptIndex, profile: chatTurnProfiles.get(chatKey) };
+  return {
+    sessionId,
+    leafUuid,
+    promptIndex,
+    profile: chatTurnProfiles.get(chatKey),
+    // A rewind cuts before the stopped step; only the latest point holds it.
+    ...(stoppedTurn && match.kind === "latest" ? { afterStoppedTurn: true } : {}),
+  };
 }
 
 /**
@@ -1202,8 +1264,8 @@ async function handleChatCompletions(
     // would restore the pre-compaction context, so the next normal turn must
     // rebuild from the (already compacted) host array instead. The summary
     // itself reads that session one last time, from an in-memory copy.
-    await stopConversationBridges(baseConversationKey);
-    summaryResume = summaryResumePoint(baseConversationKey, messages);
+    const stopped = await stopConversationBridges(baseConversationKey);
+    summaryResume = summaryResumePoint(baseConversationKey, messages, stopped > 0);
     log.info(summaryResume
       ? "[opencode-claude] summarizing from the chat's Claude session"
       : "[opencode-claude] summarizing from the history text; the chat's Claude session can't be resumed at the summarized part", {
@@ -1270,9 +1332,14 @@ async function handleChatCompletions(
 
   const prompt = answeredStep
     ? answeredToolStepPrompt(messages, answeredStep)
-    : summaryResume
-      ? latestUserPrompt(messages.slice(summaryResume.promptIndex, summaryResume.promptIndex + 1))
-      : latestUserPrompt(messages.slice(priorMessages.length));
+    : summaryResume?.afterStoppedTurn
+      ? withStoppedTurnNote(
+          latestUserPrompt(messages.slice(summaryResume.promptIndex, summaryResume.promptIndex + 1)),
+          messages.slice(0, summaryResume.promptIndex),
+        )
+      : summaryResume
+        ? latestUserPrompt(messages.slice(summaryResume.promptIndex, summaryResume.promptIndex + 1))
+        : latestUserPrompt(messages.slice(priorMessages.length));
   logPromptShape(prompt, messages);
   if (prompt === "" && requestTools.length === 0) {
     return errorResponse(400, "invalid_request_error", "No user message found");

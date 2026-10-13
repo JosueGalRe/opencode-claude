@@ -137,11 +137,13 @@ export function stopBridge(id: string, reason = "Bridge closed"): Promise<void> 
   return stop;
 }
 
-export async function stopConversationBridges(conversationKey: string, reason?: string): Promise<void> {
+/** Resolves to how many active bridges it stopped. */
+export async function stopConversationBridges(conversationKey: string, reason?: string): Promise<number> {
   const stops = [...bridges.values()]
     .filter((bridge) => bridge.conversationKey === conversationKey)
     .map((bridge) => stopBridge(bridge.id, reason));
   await Promise.all([...stops, ...(stopping.get(conversationKey) ?? [])]);
+  return stops.length;
 }
 
 /** Shutdown also waits for stops already removed from the active pool. */
