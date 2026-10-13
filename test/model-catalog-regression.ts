@@ -20,6 +20,7 @@ async function main() {
   for (const id of ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]", "claude-haiku-5-5"]) {
     assert.ok(fallback.some((model) => model.id === id), id);
   }
+  assert.equal(fallback.find((model) => model.id === "claude-haiku-5-5")?.contextWindow, 1_000_000);
   assert.ok(fallback.every((model) => model.id.startsWith("claude-")));
   const now = Date.now();
   assert.equal(await refreshClaudeModels(async () => null, now), false);
@@ -34,6 +35,7 @@ async function main() {
     { value: "claude-sonnet-4-6", resolvedModel: "claude-sonnet-4-6", displayName: "Sonnet 4.6", description: "Efficient for routine tasks", supportsEffort: true, supportedEffortLevels: ["high"], supportsAdaptiveThinking: true, supportsAutoMode: true },
     { value: "claude-opus-4-6", resolvedModel: "claude-opus-4-6", displayName: "Opus 4.6", description: "Best for everyday, complex tasks", supportsEffort: true, supportedEffortLevels: ["high"], supportsAdaptiveThinking: true, supportsAutoMode: true },
     { value: "claude-opus-4-8", supportedEffortLevels: ["max"] },
+    { value: "claude-haiku-5-5", supportedEffortLevels: ["high"] },
     { value: "haiku", resolvedModel: "claude-haiku-4-5-20251001", supportedEffortLevels: [] },
   ];
   assert.equal(modelNameFromId("claude-sonnet-5-5"), "Sonnet 5.5");
@@ -41,7 +43,7 @@ async function main() {
   assert.deepEqual(mapped.map((model) => model.id), [
     "claude-opus-5-5[1m]", "claude-sonnet-5-5", "claude-sonnet-5-5[1m]",
     "claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-6[1m]",
-    "claude-opus-4-8", "claude-haiku-4-5-20251001",
+    "claude-opus-4-8", "claude-haiku-5-5", "claude-haiku-4-5-20251001",
   ]);
   assert.deepEqual(mapped.map((model) => [model.name, model.contextWindow, model.inputWindow]), [
     ["Opus 5.5", 1_000_000, 900_000],
@@ -51,6 +53,7 @@ async function main() {
     ["Opus 4.6", 200_000, undefined],
     ["Opus 4.6 (1M)", 1_000_000, 900_000],
     ["Opus 4.8", 1_000_000, 900_000],
+    ["Haiku 5.5", 1_000_000, 900_000],
     ["Haiku 4.5", 200_000, undefined],
   ]);
   assert.equal(mapped.some((entry) => entry.id === "claude-sonnet-4-6[1m]"), false);

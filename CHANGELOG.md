@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Haiku 5.5 has its full 1M window** (ported from upstream 1.4.1): it was
+  listed at 200K and compacted early. The CLI's model registry marks it
+  native 1M (no `[1m]` variant), like Opus 4.8.
 - **Opus 5.5's update before a tool call shows as a message, not thinking**:
   Opus 5.5 sends it as a second thinking block whose signature is tagged
   `narration`, so it landed in the Thinking panel. Thinking blocks after the
@@ -15,7 +18,7 @@
   opaque call id (ported from upstream 1.4.0).
 - Sonnet 5.5 and Haiku 5.5 are listed before the CLI reports its models, so
   a session on them doesn't ask to pick a model again on a cold start
-  (ported from upstream 1.4.0). Haiku 5.5 is listed at 200K for now.
+  (ported from upstream 1.4.0).
 - A signed-out Claude Code says to run `claude auth login` and send the
   message again; restarting OpenCode isn't needed (ported from upstream
   1.3.9).
