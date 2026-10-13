@@ -1438,10 +1438,10 @@ async function handleChatCompletions(
     tools: [],
     toolAliases: mcpServers ? bridgedToolAliases(toolNames) : undefined,
     allowedTools: bridged ? toolNames.map(bridgedToolName) : undefined,
-    // Bridged calls are gated by OpenCode's permission prompts, so Claude-side
-    // checks are skipped; anything else is denied without prompting.
-    permissionMode: bridged ? "bypassPermissions" : "dontAsk",
-    allowDangerouslySkipPermissions: bridged,
+    // Bridged calls are gated by OpenCode's permission prompts. dontAsk runs
+    // exactly the allowed tools (aliases resolve first) and refuses the rest.
+    // Not bypassPermissions: the CLI refuses to start with it as root.
+    permissionMode: "dontAsk",
     systemPrompt,
   }));
   turn.attach(handle);

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Works as root** (ported from upstream 1.4.1): turns with OpenCode tools
+  ran Claude Code with `bypassPermissions`, which the CLI refuses as root.
+  They now use `dontAsk` with the bridged tools allowed; anything else is
+  refused, as before.
 - **Parallel generate calls no longer cancel each other** (ported from
   upstream 1.4.1): a title or generate call without a session was keyed by
   the first 200 characters of its prompt, so plugins running several
