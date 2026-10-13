@@ -94,6 +94,7 @@ import {
   userHistoryFingerprints,
   withConversationContext,
   withLeadingText,
+  withStoppedTurnNote,
   buildRuntimeInstructions,
   withSteering,
   type McpToolResultContent,
@@ -619,6 +620,11 @@ type SummaryResumePoint = {
   /** Index of OpenCode's summary prompt in the request. */
   promptIndex: number;
   profile?: ChatTurnProfile;
+  /**
+   * The plugin stopped the chat's parked turn for this compaction and the
+   * summary resumes after it, where the CLI recorded the stop as the user's.
+   */
+  afterStoppedTurn?: boolean;
 };
 
 /**
@@ -644,6 +650,7 @@ const SUMMARY_NUDGE_MARKER = "did not fill in the required summary template";
 function summaryResumePoint(
   chatKey: string,
   messages: OpenAIMessage[],
+  stoppedTurn: boolean,
 ): SummaryResumePoint | null {
   const sessionId = getForeignSessionId(chatKey);
   if (!sessionId) return null;
@@ -673,7 +680,13 @@ function summaryResumePoint(
   const file = findClaudeSessionFile(source);
   if (!file) return null;
   if (leafUuid && sessionChainAfterLeaf(file, leafUuid) !== "clean") return null;
-  return { sessionId: source, leafUuid, promptIndex, profile: chatTurnProfiles.get(chatKey) };
+  return {
+    sessionId: source,
+    leafUuid,
+    promptIndex,
+    profile: chatTurnProfiles.get(chatKey),
+    ...(stoppedTurn && match.kind === "latest" ? { afterStoppedTurn: true } : {}),
+  };
 }
 
 const UTILITY_SYSTEM_PROMPT =
@@ -800,9 +813,12 @@ async function handleChatCompletions(
     sessionHeader,
     messages,
   );
+  // A title or generate call without a session belongs to no chat: keyed
+  // by its prompt, concurrent calls sharing a preamble stopped each other.
+  const standalone = !sessionHeader && (metaKind === "title" || metaKind === "generate");
   const conversationKey =
     requestKeyNamespace(metaKind) +
-    (sessionHeader || conversationKeyFromMessages(messages));
+    (sessionHeader || (standalone ? `req_${randomUUID()}` : conversationKeyFromMessages(messages)));
   // OpenCode is compacting this chat. The Claude session it would resume
   // still holds the full uncompacted context, so drop the binding: the next
   // turn starts a fresh Claude session from the compacted history instead.
@@ -819,7 +835,7 @@ async function handleChatCompletions(
         conversationKey: chatKey,
       });
     }
-    summaryResume = summaryResumePoint(chatKey, messages);
+    summaryResume = summaryResumePoint(chatKey, messages, stopped > 0);
     log.info(
       summaryResume
         ? "[opencode-claude] summarizing from the chat's Claude session"
@@ -1100,6 +1116,11 @@ async function startNewTurn(input: {
   const prompt =
     answeredStep !== null
       ? answeredToolStepPrompt(messages, answeredStep)
+      : summaryResume?.afterStoppedTurn
+        ? withStoppedTurnNote(
+            latestUserPrompt(messages.slice(0, summaryResume.promptIndex + 1)),
+            messages.slice(0, summaryResume.promptIndex),
+          )
       : summaryResume
         ? latestUserPrompt(messages.slice(0, summaryResume.promptIndex + 1))
         : latestUserPrompt(messages);
@@ -1551,8 +1572,9 @@ async function startNewTurn(input: {
     allowedTools: bridgeOpenCodeTools
       ? openCodeToolNames.map((n) => mcpToolName(n))
       : undefined,
-    permissionMode: bridgeOpenCodeTools ? "bypassPermissions" : "dontAsk",
-    allowDangerouslySkipPermissions: bridgeOpenCodeTools,
+    // dontAsk runs exactly the allowed tools and refuses the rest. Not
+    // bypassPermissions: the CLI refuses to start with it as root.
+    permissionMode: "dontAsk",
     // Utility turns (titles, summaries, generate) need none of Claude Code's
     // coding instructions: a one-line prompt that names the host keeps them
     // ~15x smaller. Chat turns keep the Claude Code preset untouched.
