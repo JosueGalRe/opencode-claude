@@ -1,6 +1,6 @@
 /**
  * Regression: the subagent list OpenCode appends to its subagent tool
- * description must survive Claude Code's 2048-char MCP description cut, in
+ * description must survive Claude Code's MCP description cut, in
  * the served tools/list too. (Ported from the fork's 16f9a4c, extended to
  * V2's `subagent` tool and "Available subagents:" heading.)
  *
@@ -14,7 +14,7 @@ async function main() {
 
   const guidance =
     "Launch a new agent to handle complex, multistep tasks autonomously.\n\n" +
-    "When to use the Task tool:\n".concat("- guidance line\n".repeat(150));
+    "When to use the Task tool:\n".concat("- guidance line\n".repeat(Math.ceil(CLAUDE_TOOL_DESCRIPTION_LIMIT / 16) + 10));
   for (const heading of [
     "Available agent types and the tools they have access to:",
     "Available subagents:",

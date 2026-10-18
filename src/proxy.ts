@@ -23,7 +23,7 @@ import {
   type ParkedBridge,
   type ParkedToolCall,
 } from "./bridge-pool.js";
-import { buildClaudeCodeChildEnv } from "./auth-env.js";
+import { buildClaudeCodeChildEnv, MCP_DESCRIPTION_LIMIT } from "./auth-env.js";
 import {
   classifyClaudeFailure,
   failureCodeFor,
@@ -1886,8 +1886,12 @@ const PARALLEL_SAFE_TOOLS = new Set([
   "subagent",
 ]);
 
-/** Claude Code truncates MCP tool descriptions at this many characters. */
-export const CLAUDE_TOOL_DESCRIPTION_LIMIT = 2048;
+/**
+ * Claude Code truncates MCP tool descriptions at this many characters: the
+ * limit the child env sets, or the user's own override.
+ */
+export const CLAUDE_TOOL_DESCRIPTION_LIMIT =
+  Number.parseInt(process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH ?? "", 10) || MCP_DESCRIPTION_LIMIT;
 
 /**
  * Headings OpenCode puts before the subagent list it appends to the END of
