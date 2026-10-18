@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.4.2 - 2026-10-18
+
+- **Claude sees OpenChamber's session context**: OpenChamber's guidance,
+  pinned notes, memory and checkout details never reached Claude, so it
+  didn't link the issues and PRs it worked on to the session. It now gets
+  them like any other model.
+- **Full tool instructions**: Claude Code cut tool descriptions at 2048
+  characters, so long OpenChamber tools lost their last rules and drawn
+  pages ignored the chat theme. The limit is now 8192. Thanks to
+  @yulia-ivashko.
+- **Fix: compaction loop with another provider's summarizer**: when a chat
+  was compacted by a non-Claude model, Claude kept going with the old
+  history and the chat compacted again and again. Thanks to @mradwankhalil.
+- **Sonnet 5 and 5.5 have their full 1M window**: they were listed at 200K
+  and compacted early. The separate "(1M)" entries are gone, so pick the
+  model again in sessions that used them. Thanks to @android6.
+
 ## 1.4.1 - 2026-10-13
 
 - **Opus 5.5's update before a tool call shows as text**: the short "found
