@@ -659,30 +659,45 @@ export function collectSteeringMessages(
   return out;
 }
 
+function isSystemUpdate(text: string): boolean {
+  return text.startsWith("<system-update>") && text.endsWith("</system-update>");
+}
+
 /** Append steering to a tool result so Claude reads it on resume. */
 export function withSteering(
   result: McpToolResultContent[],
   steering: McpToolResultContent[],
 ): McpToolResultContent[] {
   if (steering.length === 0) return result;
-  const text = steering
+  const texts = steering
     .filter((b): b is { type: "text"; text: string } => b.type === "text")
     .map((b) => b.text.trim())
-    .filter(Boolean)
-    .join("\n\n");
+    .filter(Boolean);
+  // OpenCode sends a changed session context entry as `<system-update>` user
+  // text. It comes from the host, not the user, so it is not labelled as theirs.
+  const updates = texts.filter(isSystemUpdate);
+  const text = texts.filter((t) => !isSystemUpdate(t)).join("\n\n");
   const media = steering.filter((b) => b.type !== "text");
+  const userSent = text.length > 0 || media.length > 0;
   return [
     ...result,
-    {
-      type: "text",
-      text: [
-        "<system-reminder>",
-        "While this tool was running, the user sent the following message(s). Read them now and adjust your current work accordingly; they take priority over earlier instructions where they conflict:",
-        "",
-        text || "(attachments only, see below)",
-        "</system-reminder>",
-      ].join("\n"),
-    },
+    ...(updates.length > 0
+      ? [{ type: "text" as const, text: updates.join("\n\n") }]
+      : []),
+    ...(userSent
+      ? [
+          {
+            type: "text" as const,
+            text: [
+              "<system-reminder>",
+              "While this tool was running, the user sent the following message(s). Read them now and adjust your current work accordingly; they take priority over earlier instructions where they conflict:",
+              "",
+              text || "(attachments only, see below)",
+              "</system-reminder>",
+            ].join("\n"),
+          },
+        ]
+      : []),
     ...media,
   ];
 }

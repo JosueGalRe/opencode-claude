@@ -10,7 +10,11 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { currentHost, mcpToolName, openCodeToolName } from "./host.js";
-import { mcpInstructions, openCodeInstructionFiles } from "./opencode-context.js";
+import {
+  mcpInstructions,
+  openCodeInstructionFiles,
+  sessionContextBlocks,
+} from "./opencode-context.js";
 import {
   bridgeRuntime,
   clearAllBridges,
@@ -1479,6 +1483,7 @@ async function startNewTurn(input: {
   const skills = openCodeToolNames.includes("skill") ? skillsCatalog(messages) : "";
   const agentPrompt = customAgentPrompt(messages);
   const instructionFiles = isMetaRequest ? "" : openCodeInstructionFiles(messages, cwd);
+  const sessionContext = isMetaRequest ? "" : sessionContextBlocks(messages);
   const mcpNotes = openCodeToolNames.includes("execute") ? mcpInstructions(messages) : "";
   // Stored in the chat's profile below, so a summary that resumes the chat
   // repeats the same prompt, flag included, and still reads from the cache.
@@ -1510,6 +1515,9 @@ async function startNewTurn(input: {
         : []),
       ...(instructionFiles
         ? [`# Project instructions (loaded by ${currentHost().name})\n\n${instructionFiles}`]
+        : []),
+      ...(sessionContext
+        ? [`# Session context (attached by ${currentHost().name})\n\n${sessionContext}`]
         : []),
     ].join("\n\n"),
   };
