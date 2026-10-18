@@ -532,7 +532,7 @@ async function main() {
   const variants = buildEffortVariants(sonnet);
   assert.deepEqual(variants, [...EFFORT_LEVELS]);
   for (const level of EFFORT_LEVELS) assert.equal(isClaudeEffort(level), true);
-  assert.equal(sonnet.contextWindow, 200_000);
+  assert.equal(sonnet.contextWindow, 1_000_000, "Sonnet 5 runs at 1M natively");
   // Haiku takes no effort, so it gets no effort variants
   assert.deepEqual(
     buildEffortVariants(getClaudeModels().find((m) => m.id === "claude-haiku-4-5")!),
@@ -564,13 +564,12 @@ async function main() {
     const byId = Object.fromEntries(fromCli.map((m) => [m.id, m]));
     assert.deepEqual(
       fromCli.map((m) => m.id),
-      ["claude-opus-5-5[1m]", "claude-sonnet-5", "claude-sonnet-5[1m]", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
+      ["claude-opus-5-5[1m]", "claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
     );
     assert.equal(byId["claude-opus-5-5[1m]"]!.contextWindow, 1_000_000);
     assert.equal(byId["claude-opus-5-5[1m]"]!.name, "Opus 5.5");
     assert.deepEqual(buildEffortVariants(byId["claude-opus-5-5[1m]"]!), ["low", "high"]);
-    assert.equal(byId["claude-sonnet-5"]!.contextWindow, 200_000);
-    assert.equal(byId["claude-sonnet-5[1m]"]!.name, "Sonnet 5 (1M)");
+    assert.equal(byId["claude-sonnet-5"]!.contextWindow, 1_000_000);
     assert.equal(byId["claude-opus-4-8"]!.contextWindow, 1_000_000);
     assert.deepEqual(buildEffortVariants(byId["claude-haiku-4-5-20251001"]!), []);
     assert.equal(setDiscoveredModels(fromCli), true);
