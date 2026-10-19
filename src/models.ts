@@ -44,10 +44,8 @@ function model(
 const FALLBACK_MODELS: ClaudeModel[] = [
   model("claude-opus-5-5[1m]", "Opus 5.5", LIMIT_1M),
   model("claude-fable-5-1[1m]", "Fable 5.1", LIMIT_1M),
-  model("claude-sonnet-5-5", "Sonnet 5.5", LIMIT_200K),
-  model("claude-sonnet-5-5[1m]", "Sonnet 5.5 (1M)", LIMIT_1M),
-  model("claude-sonnet-5", "Sonnet 5", LIMIT_200K),
-  model("claude-sonnet-5[1m]", "Sonnet 5 (1M)", LIMIT_1M),
+  model("claude-sonnet-5-5", "Sonnet 5.5", LIMIT_1M),
+  model("claude-sonnet-5", "Sonnet 5", LIMIT_1M),
   model("claude-haiku-5-5", "Haiku 5.5", LIMIT_1M),
   model("claude-haiku-4-5", "Haiku 4.5", LIMIT_200K, []),
   model("claude-opus-4-8", "Opus 4.8", LIMIT_1M),
@@ -67,8 +65,9 @@ const ONE_M_FAMILIES: Array<{ match: RegExp; mode: "default" | "optional" | "fix
   // ponytail: Opus 4.6/Sonnet 4.6 entitlement is hand-maintained from anthropics/claude-code #34773/#41121 and CC 2.1.75; revisit when Anthropic changes 1M billing.
   { match: /^claude-opus-4-6/, mode: "optional" },
   { match: /^claude-opus-4-[78]/, mode: "fixed" },
-  { match: /^claude-sonnet-5/, mode: "optional" },
-  // The CLI's registry marks Haiku 5.5 native_1m (window 1e6), with no [1m] row.
+  // The CLI's registry marks Sonnet 5/5.5 and Haiku 5.5 native_1m (window
+  // 1e6), with no [1m] row.
+  { match: /^claude-sonnet-5/, mode: "fixed" },
   { match: /^claude-haiku-5/, mode: "fixed" },
 ];
 

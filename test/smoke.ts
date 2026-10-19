@@ -395,7 +395,7 @@ async function main() {
   const catalogModel = (id: string) => models.find((m) => m.id === id)!;
   assert.equal(catalogModel("claude-fable-5-1[1m]").inputWindow, 900_000);
   assert.equal(catalogModel("claude-opus-5-5[1m]").inputWindow, 900_000);
-  assert.equal(catalogModel("claude-sonnet-5[1m]").inputWindow, 900_000);
+  assert.equal(catalogModel("claude-sonnet-5").inputWindow, 900_000, "Sonnet 5 runs at 1M natively");
   assert.equal(catalogModel("claude-haiku-4-5").inputWindow, undefined);
 
   const sonnet = catalogModel("claude-sonnet-5");

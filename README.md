@@ -98,8 +98,8 @@ Ids are concrete Claude Code model ids; names are derived from the id. A `[1m]` 
 | Id shape | Example | Context |
 | --- | --- | --- |
 | Only offered with 1M | `claude-opus-5-5[1m]` · `claude-fable-5-1[1m]` | 1M |
-| Plain and `[1m]`, as separate choices | `claude-sonnet-5-5` · `claude-sonnet-5-5[1m]` | 200k · 1M |
-| Plain id that already runs at 1M | `claude-opus-4-8` | 1M |
+| Plain and `[1m]`, as separate choices | `claude-opus-4-6` · `claude-opus-4-6[1m]` | 200k · 1M |
+| Plain id that already runs at 1M | `claude-opus-4-8` · `claude-sonnet-5-5` · `claude-haiku-5-5` | 1M |
 | Everything else | `claude-haiku-4-5-20251001` | 200k |
 
 The aliases (`sonnet`, `opus`, `fable`, `haiku`) and the old pinned ids without the suffix (`claude-opus-5-5`, `claude-fable-5-1`) are no longer listed. If your config or a saved session points at one, pick the model again.

@@ -149,7 +149,7 @@ async function main() {
 
     const models = added!.models;
     assert.equal(models.length, getClaudeModels().length);
-    const sonnet = models.find((m) => m.id === "claude-sonnet-5-5[1m]");
+    const sonnet = models.find((m) => m.id === "claude-sonnet-5-5");
     assert.ok(sonnet);
     assert.equal(sonnet.limit.context, 1_000_000);
     // V2 keeps 10% free itself; an input limit on top compacted at 81%.

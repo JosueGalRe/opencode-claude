@@ -259,13 +259,13 @@ async function v1RequestsCarryProxyToken() {
     };
     await hooks.config!(config as never);
     assert.equal(config.provider[PROVIDER_ID]!.options.apiKey, token);
-    assert.ok(config.provider[PROVIDER_ID]!.models["claude-sonnet-5-5[1m]"]);
+    assert.ok(config.provider[PROVIDER_ID]!.models["claude-sonnet-5-5"]);
     assert.ok(config.provider[PROVIDER_ID]!.models["claude-haiku-4-5-20251001"]);
     assert.equal(config.provider[PROVIDER_ID]!.models["claude-haiku-4-5-20251001"].variants.high.disabled, true);
     assert.equal(config.provider[PROVIDER_ID]!.models.sonnet, undefined);
     const providerModels = await hooks.provider!.models!({} as never);
-    assert.ok(providerModels["claude-sonnet-5-5[1m]"]);
-    assert.equal(providerModels["claude-sonnet-5-5[1m]"].limit.input, 900_000);
+    assert.ok(providerModels["claude-sonnet-5-5"]);
+    assert.equal(providerModels["claude-sonnet-5-5"].limit.input, 900_000);
 
     const output = { headers: {} as Record<string, string> };
     await hooks["chat.headers"]!(

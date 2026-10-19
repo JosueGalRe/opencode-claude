@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Sonnet 5 and 5.5 have their full 1M window** (ported from upstream
+  1.4.2): the plain ids were listed at 200K next to a "(1M)" entry, so a
+  chat on plain Sonnet compacted around 180K. The CLI's model registry marks
+  both native 1M, like Haiku 5.5. The "(1M)" entries are gone: sessions on
+  `claude-sonnet-5[1m]` or `claude-sonnet-5-5[1m]` must pick the model again.
 - **Compaction no longer tells Claude you rejected its tool calls** (ported
   from upstream 1.4.1): compacting a chat stops its parked turn, and the CLI
   records the pending calls as rejected and the request as interrupted by
