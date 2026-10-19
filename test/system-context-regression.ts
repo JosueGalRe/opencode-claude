@@ -141,6 +141,10 @@ async function main() {
         "",
         INSTRUCTIONS,
         "",
+        // Session context a host attached (OpenChamber's guidance, notes,
+        // memory, checkout), rendered like any other instruction source.
+        '<context key="openchamber.guidance">\nLink each pull request you open with session.link.\n</context>',
+        "",
         "Today's date: Thu Oct 01 2026",
         "",
         "Here is some useful information about the environment you are running in:\n<env>\n  Working directory: /repo\n  Platform: linux\n</env>",
@@ -152,7 +156,7 @@ async function main() {
     { role: "system", content: "The environment you are running in is now:\n<env>\n  Working directory: /other\n</env>" },
   ];
   const v2NextContext = openCodeSystemContext(v2Next);
-  for (const kept of [/Run tests sequentially/, /<name>pdf<\/name>/, /Use ctx wisely/, /PONYTAIL MODE ACTIVE/]) {
+  for (const kept of [/Run tests sequentially/, /<name>pdf<\/name>/, /Use ctx wisely/, /PONYTAIL MODE ACTIVE/, /<context key="openchamber\.guidance">\nLink each pull request/]) {
     assert.match(v2NextContext, kept);
   }
   assert.doesNotMatch(v2NextContext, /Your Model|Model ID|Working directory|<env>|Today's date|Code Mode|tools\.railway|coding agent harness|# Agent role/);

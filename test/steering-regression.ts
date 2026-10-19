@@ -15,30 +15,30 @@ import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 async function main() {
   const { collectSteeringText } = await import("../src/steering.ts");
   const { SYNTHETIC_TOOL_MEDIA_PROMPT } = await import("../src/prompt.ts");
-  assert.equal(collectSteeringText([{ role: "user", content: "hi" }]), "");
-  assert.equal(
+  assert.deepEqual(collectSteeringText([{ role: "user", content: "hi" }]), []);
+  assert.deepEqual(
     collectSteeringText([
       { role: "user", content: "old" },
       { role: "tool", content: "r" },
     ]),
-    "",
+    [],
   );
-  assert.equal(
+  assert.deepEqual(
     collectSteeringText([
       { role: "user", content: "old" },
       { role: "tool", content: "r" },
       { role: "user", content: [{ type: "text", text: "use port 8080" }] },
       { role: "user", content: "and skip tests" },
     ]),
-    "use port 8080\n\nand skip tests",
+    ["use port 8080", "and skip tests"],
   );
-  assert.equal(
+  assert.deepEqual(
     collectSteeringText([
       { role: "user", content: "old" },
       { role: "tool", content: "r" },
       { role: "user", content: SYNTHETIC_TOOL_MEDIA_PROMPT },
     ]),
-    "",
+    [],
   );
 
   const tmp = mkdtempSync(join(tmpdir(), "opencode-claude-steer-"));
@@ -127,6 +127,21 @@ async function main() {
 
     const plain = await run("steer-no", []);
     assert.equal(plain, "exit 0");
+
+    // A session context entry that changed while the tool ran arrives as
+    // `<system-update>` user text. It is the host's, not the user's message.
+    const update =
+      '<system-update>\nThe context under "openchamber.pinned" changed and supersedes the previous value:\n<context key="openchamber.pinned">\nShip on Friday.\n</context>\n</system-update>';
+    const onlyUpdate = await run("steer-update", [{ role: "user", content: update }]);
+    assert.equal(onlyUpdate, `exit 0\n${update}`);
+    const both = await run("steer-update-user", [
+      { role: "user", content: update },
+      { role: "user", content: "stop after this" },
+    ]);
+    const reminder = /<system-reminder>[\s\S]*<\/system-reminder>/.exec(both!)?.[0] ?? "";
+    assert.ok(both!.startsWith(`exit 0\n${update}\n`));
+    assert.match(reminder, /the user sent[\s\S]*stop after this/);
+    assert.doesNotMatch(reminder, /Ship on Friday/);
   } finally {
     await stopProxy();
   }

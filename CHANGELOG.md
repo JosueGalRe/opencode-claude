@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Session context updates during a tool call are no longer passed off as
+  your message** (ported from upstream 1.4.2): OpenCode sends a changed
+  session context entry (OpenChamber's guidance, notes, memory, checkout) as
+  `<system-update>` user text. While a tool ran, it was forwarded inside the
+  "the user sent the following message(s)" reminder; it now goes with the
+  tool result as is. The context itself already reached Claude here: it sits
+  among the V2 instruction sources the plugin forwards.
 - **Full tool instructions** (ported from upstream 1.4.2): Claude Code cuts
   MCP tool descriptions at 4096 characters (2048 before 2.1.296), so long
   OpenCode and OpenChamber tools lost their last rules. Claude Code now runs

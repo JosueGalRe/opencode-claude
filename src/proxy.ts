@@ -946,8 +946,8 @@ function answerParkedTools(
   }
   // Deliver queued user messages with the last tool result resolved now,
   // so they reach Claude exactly once.
-  const steering = lastResolved ? collectSteeringText(messages) : "";
-  if (steering && !bridge.metaKind) {
+  const steering = lastResolved ? collectSteeringText(messages) : [];
+  if (steering.length > 0 && !bridge.metaKind) {
     const prior = nonSystemMessages(withoutSystemReminders(priorMessages));
     const seen = getSessionBinding(bridge.conversationKey)?.history;
     // Continuations must not restart the turn, but must not bless a DCP
@@ -964,13 +964,13 @@ function answerParkedTools(
     const result = results.get(toolId)!;
     bridge.pendingTools
       .get(toolId)!
-      .resolve(toolId === lastResolved && steering ? withSteering(result, steering) : result);
+      .resolve(toolId === lastResolved && steering.length > 0 ? withSteering(result, steering) : result);
     bridge.pendingTools.delete(toolId);
   }
-  if (steering) {
+  if (steering.length > 0) {
     log.info("[opencode-claude] forwarding mid-turn user steering", {
       conversationKey: bridge.conversationKey,
-      steeringChars: steering.length,
+      steeringChars: steering.join("\n\n").length,
     });
   }
   if (bridge.pendingTools.size === 0) {
