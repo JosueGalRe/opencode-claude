@@ -1,11 +1,15 @@
+import { MCP_DESCRIPTION_LIMIT } from "./auth-env.js";
+
 /**
- * Claude Code truncates MCP tool descriptions at 2048 characters.
+ * Claude Code truncates MCP tool descriptions at this many characters: the
+ * limit the child env sets, or the user's own override.
  * OpenCode appends the list of subagents to the END of its task tool
- * description, after ~2300 characters of guidance, so Claude never sees
- * which subagent_type values exist. Move the list to the front: the cut
- * then falls on the tail of the generic guidance instead.
+ * description, after the guidance, so a cut there hides which subagent_type
+ * values exist. Past the limit, move the list to the front: the cut then
+ * falls on the tail of the generic guidance instead.
  */
-export const CLAUDE_TOOL_DESCRIPTION_LIMIT = 2048;
+export const CLAUDE_TOOL_DESCRIPTION_LIMIT =
+  Number.parseInt(process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH ?? "", 10) || MCP_DESCRIPTION_LIMIT;
 
 const AGENT_LIST_MARKER =
   "Available agent types and the tools they have access to:";

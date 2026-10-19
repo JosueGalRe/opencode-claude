@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Full tool instructions** (ported from upstream 1.4.2): Claude Code cuts
+  MCP tool descriptions at 4096 characters (2048 before 2.1.296), so long
+  OpenCode and OpenChamber tools lost their last rules. Claude Code now runs
+  with `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH=8192` unless you set it, and
+  the subagent list is moved to the front only past that limit.
 - **Sonnet 5 and 5.5 have their full 1M window** (ported from upstream
   1.4.2): the plain ids were listed at 200K next to a "(1M)" entry, so a
   chat on plain Sonnet compacted around 180K. The CLI's model registry marks

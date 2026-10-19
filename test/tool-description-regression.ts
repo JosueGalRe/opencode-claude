@@ -1,6 +1,6 @@
 /**
  * Regression: the subagent list OpenCode appends to the task tool description
- * must survive Claude Code's 2048-char MCP description cut.
+ * must survive Claude Code's MCP description cut.
  *
  * Run: bun test/tool-description-regression.ts
  */
@@ -13,7 +13,7 @@ async function main() {
 
   const guidance =
     "Launch a new agent to handle complex, multistep tasks autonomously.\n\n" +
-    "When to use the Task tool:\n".concat("- guidance line\n".repeat(150));
+    "When to use the Task tool:\n".concat("- guidance line\n".repeat(Math.ceil(CLAUDE_TOOL_DESCRIPTION_LIMIT / 16) + 10));
   const agents = [
     "Available agent types and the tools they have access to:",
     "- general: General-purpose agent for multi-step tasks.",
