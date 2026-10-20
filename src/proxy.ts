@@ -49,7 +49,7 @@ import {
   decodeClaudeModelSelection,
   EFFORT_HEADER,
 } from "./model-selection.js";
-import { resolveClaudeModelId } from "./models.js";
+import { FAST_MODEL_SUFFIX, resolveClaudeModelId } from "./models.js";
 import { collectSteeringText, withSteering } from "./steering.js";
 import { turnSystemPrompt, type ClaudeCodePreset } from "./system-context.js";
 import {
@@ -1476,6 +1476,8 @@ async function handleChatCompletions(
   const turnInput = bridged
     ? createTurnInput(typeof contextualPrompt === "string" ? contextualPrompt || " " : contextualPrompt)
     : undefined;
+  // Titles and summaries stay at normal speed.
+  const fastMode = !isMetaRequest && selection.modelId.endsWith(FAST_MODEL_SUFFIX);
   const handle = withGracefulStop(await queryStarter({
     prompt:
       metaKind === "title"
@@ -1498,6 +1500,7 @@ async function handleChatCompletions(
     effort: summaryResume
       ? summaryResume.profile?.effort ?? selection.effort
       : isMetaRequest ? undefined : selection.effort,
+    fastMode,
     env: {
       ...buildClaudeCodeChildEnv(),
       // Claude Code adds the user's auto-memory index to every turn, even with
@@ -1536,6 +1539,7 @@ async function handleChatCompletions(
       if ((event as { type?: unknown } | null)?.type === "result") turnInput.end();
     });
   }
+  if (fastMode) handle.onEvent((event) => logFastModeState(event, conversationKey));
 
   if (seenHistory) {
     let boundSessionId: string | null = null;
@@ -1584,6 +1588,26 @@ async function handleChatCompletions(
   } finally {
     releaseSpawnLock();
   }
+}
+
+/**
+ * A fast-mode turn the CLI runs at standard speed (extra usage off, plan or
+ * model not allowed) still answers; the log says why.
+ */
+function logFastModeState(event: unknown, conversationKey: string): void {
+  const e = event as {
+    type?: string;
+    subtype?: string;
+    fast_mode_state?: string;
+    fast_mode_disabled_reason?: string;
+  } | null;
+  if (e?.type !== "system" || e.subtype !== "init" || e.fast_mode_state === undefined) return;
+  if (e.fast_mode_state === "on") return;
+  log.warn("[opencode-claude] fast mode requested but not active", {
+    conversationKey,
+    state: e.fast_mode_state,
+    reason: e.fast_mode_disabled_reason,
+  });
 }
 
 /** Compaction's synthetic user summary is a leaf; its boundary/replays are not. */

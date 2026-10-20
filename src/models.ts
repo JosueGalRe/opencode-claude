@@ -13,7 +13,15 @@ export type ClaudeModel = {
   maxTokens: number;
   inputWindow?: number;
   efforts: ClaudeEffort[];
+  /** Runs in Claude Code's fast mode: the id is the model's plus FAST_MODEL_SUFFIX. */
+  fast?: boolean;
 };
+
+/**
+ * Suffix of a fast-mode entry's id. OpenCode has no speed setting, so fast
+ * mode is a model of its own in the picker ("Opus 5.5 Fast").
+ */
+export const FAST_MODEL_SUFFIX = ":fast";
 
 const LIMIT_1M = { context: 1_000_000, input: 900_000, output: 128_000 } as const;
 const LIMIT_200K = { context: 200_000, output: 64_000 } as const;
@@ -56,6 +64,7 @@ export type SdkModelRow = {
   displayName?: string;
   resolvedModel?: string;
   supportedEffortLevels?: string[];
+  supportsFastMode?: boolean;
 };
 
 /** default: only 1M; optional: both; fixed: plain id already uses 1M. */
@@ -103,7 +112,19 @@ export function modelsFromSdk(rows: SdkModelRow[]): ClaudeModel[] {
     }
   }
   const seen = new Set<string>();
-  return out.filter((entry) => !seen.has(entry.id) && seen.add(entry.id));
+  const unique = out.filter((entry) => !seen.has(entry.id) && seen.add(entry.id));
+  // Fast mode where the CLI says the model supports it, next to its model.
+  const fastModels = new Set(
+    rows
+      .filter((row) => row?.supportsFastMode === true)
+      .map((row) => (row.resolvedModel || row.value || "").trim().replace(/\[1m\]$/i, ""))
+      .filter((id) => id && id !== "default"),
+  );
+  return unique.flatMap((entry) =>
+    fastModels.has(entry.id.replace(/\[1m\]$/i, ""))
+      ? [entry, { ...entry, id: `${entry.id}${FAST_MODEL_SUFFIX}`, name: `${entry.name} Fast`, fast: true }]
+      : [entry],
+  );
 }
 
 const cachedModelSchema = z.object({
@@ -111,6 +132,7 @@ const cachedModelSchema = z.object({
   contextWindow: z.number(), maxTokens: z.number(),
   inputWindow: z.number().optional(),
   efforts: z.array(z.enum(EFFORT_LEVELS)),
+  fast: z.boolean().optional(),
 });
 
 function modelCachePath(): string {
@@ -162,6 +184,7 @@ export async function refreshClaudeModels(
 }
 
 export function resolveClaudeModelId(modelId: string): string {
+  if (modelId.endsWith(FAST_MODEL_SUFFIX)) return modelId.slice(0, -FAST_MODEL_SUFFIX.length);
   // OpenCode title/summary requests still address Haiku by its short id;
   // supportedModels() may return only a dated concrete Haiku id.
   if (modelId === "claude-haiku-4-5") {

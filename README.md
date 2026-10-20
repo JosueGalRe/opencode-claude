@@ -104,6 +104,8 @@ Ids are concrete Claude Code model ids; names are derived from the id. A `[1m]` 
 
 The aliases (`sonnet`, `opus`, `fable`, `haiku`) and the old pinned ids without the suffix (`claude-opus-5-5`, `claude-fable-5-1`) are no longer listed. If your config or a saved session points at one, pick the model again.
 
+Models your CLI runs in [fast mode](https://code.claude.com/docs/en/fast-mode) get a second entry, like "Opus 5.5 Fast" (`claude-opus-5-5[1m]:fast`). It runs chat turns on the same model with fast mode on; titles and summaries stay at normal speed. On a subscription fast mode is billed as extra usage; with extra usage off the turn runs at normal speed and the log says why.
+
 The effort variants `low` · `medium` · `high` · `xhigh` · `max` map to Claude Code's `--effort` with adaptive thinking. Each model offers only the levels the CLI reports for it. Title requests, and summaries read from the history as text, run without effort or thinking; a summary that reads the chat's Claude session keeps the chat's.
 
 ## How it works

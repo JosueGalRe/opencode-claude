@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Fast mode** (ported from upstream 1.5.0): models the CLI marks
+  `supportsFastMode` (today Opus 5.5, Opus 5 and Opus 4.8) get a separate
+  "Fast" entry in the model picker, `<id>:fast`. It runs chat turns on the
+  same model with the SDK's `fastMode` opt-in; titles and summaries stay at
+  normal speed. It's billed as extra usage; if fast mode isn't available, the
+  turn runs at normal speed and the log says why.
 - **Messages sent mid-turn arrive as yours, not as tool output** (ported
   from upstream 1.5.0): a message you sent while Claude ran a tool was
   appended to that tool's result as a `<system-reminder>`, and Claude may

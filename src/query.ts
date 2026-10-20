@@ -202,6 +202,8 @@ export type StartClaudeQueryParams = {
   forkSession?: boolean;
   permissionMode?: string;
   effort?: ClaudeEffort | string;
+  /** Claude Code's fast mode (billed as extra usage on subscriptions). */
+  fastMode?: boolean;
   systemPrompt?:
     | string
     | {
@@ -330,6 +332,9 @@ export async function startClaudeQuery(
   options.settings = {
     disableClaudeAiConnectors: true,
     ...(params.autoCompactEnabled === false ? { autoCompactEnabled: false } : {}),
+    // The SDK's opt-in: without it the CLI reports fast mode off with
+    // `sdk_opt_in_required`, whatever the user picked in Claude Code.
+    ...(params.fastMode === true ? { fastMode: true } : {}),
   };
 
   if (params.persistSession === false) options.persistSession = false;
