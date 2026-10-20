@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Session titles in your language** (ported from upstream 1.5.0): titles
+  are written in the language of the request.
 - **Project folders with non-ASCII names work** (ported from upstream
   1.5.0): the project directory travels to the proxy in a header, and
   `fetch` rejects header values outside Latin-1, so a folder named in
