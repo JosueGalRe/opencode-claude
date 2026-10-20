@@ -3,7 +3,7 @@ export const OPENAI_COMPATIBLE_NPM = "@ai-sdk/openai-compatible";
 
 export const EFFORT_HEADER = "x-opencode-claude-effort";
 export const SESSION_HEADER = "x-opencode-claude-session";
-/** Active OpenCode project directory forwarded to the local Agent SDK proxy. */
+/** Active OpenCode project directory forwarded to the local Agent SDK proxy, URI-encoded. */
 export const DIRECTORY_HEADER = "x-opencode-claude-directory";
 /** Per-process secret the plugin sends so only it can drive the local proxy. */
 export const PROXY_TOKEN_HEADER = "x-opencode-claude-token";

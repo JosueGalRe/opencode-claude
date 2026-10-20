@@ -173,7 +173,7 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
       event.headers[PROXY_TOKEN_HEADER] = getProxyAuthToken();
       // A stateless generate.text call has no session; never send "undefined".
       if (event.sessionID) event.headers[SESSION_HEADER] = event.sessionID;
-      event.headers[DIRECTORY_HEADER] = ctx.location.directory;
+      event.headers[DIRECTORY_HEADER] = encodeURIComponent(ctx.location.directory);
       event.headers[REQUEST_KIND_HEADER] = event.kind;
     });
     // A parked turn has no HTTP request to cancel when its session stops.

@@ -917,7 +917,7 @@ async function main() {
     "ses_test",
   );
   assert.equal(
-    requestHeaders["x-opencode-claude-directory"],
+    decodeURIComponent(requestHeaders["x-opencode-claude-directory"]!),
     "/data/projects/infra",
   );
   assert.equal(requestHeaders["x-opencode-claude-session"], "ses_test");

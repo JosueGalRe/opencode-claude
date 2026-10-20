@@ -1,4 +1,8 @@
-/** Cwd changes and legacy entries resume; a missing current leaf falls back to plain resume. */
+/**
+ * Cwd changes and legacy entries resume; a missing current leaf falls back to
+ * plain resume. The new directory has a non-ASCII name: the header carrying
+ * it must survive fetch's Latin-1 check and reach the CLI unchanged.
+ */
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { StartClaudeQueryParams } from "../src/query.ts";
@@ -7,6 +11,7 @@ import { assert, assistant, mockHandle, result, startMockedProxy, textDelta, use
 async function main() {
   const h = await startMockedProxy("cwd-resume");
   const store = await import("../src/session-store.ts");
+  const { applyClaudeRequestContextHeaders } = await import("../src/index.ts");
   const calls: StartClaudeQueryParams[] = [];
   const messages = [user("first"), assistant("answer"), user("second")];
   h.proxy.setClaudeQueryStarter(async (params) => {
@@ -16,10 +21,12 @@ async function main() {
   try {
     h.transcript("session", ["leaf", "later-entry"]);
     store.setForeignSessionId("moved", "session", { cwd: "/old", leafUuid: "leaf" });
-    const res = await h.post("moved", { messages }, { "x-opencode-claude-directory": "/new" });
+    const headers: Record<string, string> = {};
+    applyClaudeRequestContextHeaders(headers, "/new/新目录 ñ");
+    const res = await h.post("moved", { messages }, headers);
     assert.equal(res.status, 200);
     await res.text();
-    assert.equal(calls.at(-1)?.cwd, "/new");
+    assert.equal(calls.at(-1)?.cwd, "/new/新目录 ñ");
     assert.equal(calls.at(-1)?.resume, "session");
     assert.equal("resumeSessionAt" in calls.at(-1)!, false);
     assert.doesNotMatch(String(calls.at(-1)?.prompt), /<conversation_history>/);

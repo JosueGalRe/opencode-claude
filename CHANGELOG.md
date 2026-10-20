@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Project folders with non-ASCII names work** (ported from upstream
+  1.5.0): the project directory travels to the proxy in a header, and
+  `fetch` rejects header values outside Latin-1, so a folder named in
+  Cyrillic, Chinese or with an accent like `canción` broke every request.
+  The header is now URI-encoded.
 - **Session context updates during a tool call are no longer passed off as
   your message** (ported from upstream 1.4.2): OpenCode sends a changed
   session context entry (OpenChamber's guidance, notes, memory, checkout) as

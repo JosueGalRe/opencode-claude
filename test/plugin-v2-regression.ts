@@ -186,7 +186,7 @@ async function main() {
       effort: "high",
     });
     assert.equal(event.headers[SESSION_HEADER], "sess-v2");
-    assert.equal(event.headers[DIRECTORY_HEADER], "/work/project");
+    assert.equal(decodeURIComponent(event.headers[DIRECTORY_HEADER]!), "/work/project");
     assert.equal(event.headers[PROXY_TOKEN_HEADER], token);
     assert.equal(event.headers[REQUEST_KIND_HEADER], "compaction");
     // A stateless generate call has no session: no header, not "undefined".

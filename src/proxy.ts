@@ -1372,9 +1372,10 @@ async function handleChatCompletions(
   const refusal = await subscriptionRefusal();
   if (refusal) return errorResponse(401, "authentication_error", refusal);
 
+  const directoryHeader = req.headers.get(DIRECTORY_HEADER)?.trim();
   const cwd =
     process.env.OPENCODE_CLAUDE_CWD ||
-    req.headers.get(DIRECTORY_HEADER)?.trim() ||
+    (directoryHeader ? decodeURIComponent(directoryHeader) : undefined) ||
     process.cwd();
   // Orphaned tool results rebuild the step, not the conversation: they can
   // still use the bound session and carry the results in their prompt.
