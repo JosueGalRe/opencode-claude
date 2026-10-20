@@ -635,13 +635,13 @@ export function collectSteering(
  */
 export function collectSteeringMessages(
   messages: Array<{ role?: string; content?: unknown }>,
-): Array<{ key: string; blocks: McpToolResultContent[] }> {
+): Array<{ key: string; blocks: McpToolResultContent[]; prompt: string | AnthropicContentBlock[] }> {
   let lastTool = -1;
   for (let i = 0; i < messages.length; i++) {
     if (messages[i]?.role === "tool") lastTool = i;
   }
   if (lastTool < 0) return [];
-  const out: Array<{ key: string; blocks: McpToolResultContent[] }> = [];
+  const out: Array<{ key: string; blocks: McpToolResultContent[]; prompt: string | AnthropicContentBlock[] }> = [];
   const occurrences = new Map<string, number>();
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -653,7 +653,7 @@ export function collectSteeringMessages(
     const content = openaiToolResultToMcpContent(msg.content);
     const hasText = content.some((b) => b.type === "text" && b.text.trim());
     if (hasText || content.some((b) => b.type !== "text")) {
-      out.push({ key: `${nth}:${identity}`, blocks: content });
+      out.push({ key: `${nth}:${identity}`, blocks: content, prompt: userMessagePrompt(msg.content) });
     }
   }
   return out;
@@ -1073,4 +1073,82 @@ export function withLeadingText(
  */
 export function buildRuntimeInstructions(): string {
   return `<runtime_info>In case you're asked: you are running in ${currentHost().name} through the Claude Code harness. No need to mention this otherwise.</runtime_info>`;
+}
+
+/**
+ * Input of a chat turn that stays open while the turn runs, so a message the
+ * user sends mid-turn reaches Claude as a user message (`priority: "next"`:
+ * the CLI adds it after the running tool's result, as Claude Code does with a
+ * message typed while a tool runs). Ends with the turn.
+ */
+export type TurnInput = {
+  stream: AsyncGenerator<SdkUserPrompt, void, unknown>;
+  /** Resolves once the SDK has taken the message for the CLI. */
+  push(content: string | AnthropicContentBlock[]): Promise<void>;
+  end(): void;
+  ended(): boolean;
+};
+
+const TURN_INPUT_TAKE_MS = 2000;
+
+export function createTurnInput(first: string | SdkUserPrompt): TurnInput {
+  type Entry = { prompt: SdkUserPrompt; taken: () => void };
+  const queue: Entry[] = [];
+  let wake: (() => void) | null = null;
+  let done = false;
+  const notify = () => {
+    wake?.();
+    wake = null;
+  };
+  const firstPrompt: SdkUserPrompt =
+    typeof first === "string"
+      ? { type: "user", message: { role: "user", content: first }, parent_tool_use_id: null }
+      : first;
+  async function* stream(): AsyncGenerator<SdkUserPrompt, void, unknown> {
+    try {
+      yield firstPrompt;
+      while (!done) {
+        const entry = queue.shift();
+        if (entry) {
+          entry.taken();
+          yield entry.prompt;
+          continue;
+        }
+        await new Promise<void>((resolve) => (wake = resolve));
+      }
+    } finally {
+      done = true;
+      for (const entry of queue.splice(0)) entry.taken();
+    }
+  }
+  return {
+    stream: stream(),
+    push(content) {
+      if (done) return Promise.resolve();
+      // A CLI that stops reading must not hold the tool results back.
+      return new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, TURN_INPUT_TAKE_MS);
+        timer.unref?.();
+        const taken = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        queue.push({
+          prompt: {
+            type: "user",
+            message: { role: "user", content },
+            parent_tool_use_id: null,
+            priority: "next",
+          } as SdkUserPrompt,
+          taken,
+        });
+        notify();
+      });
+    },
+    end() {
+      done = true;
+      notify();
+    },
+    ended: () => done,
+  };
 }

@@ -95,6 +95,7 @@ import {
   priorMessagesOf,
   historyAfterUserCount,
   promptAsStream,
+  createTurnInput,
   userHistoryFingerprints,
   withConversationContext,
   withLeadingText,
@@ -904,6 +905,7 @@ async function handleChatCompletions(
       .map((m) => ({
         key: createHash("sha1").update(m.key).digest("hex"),
         blocks: m.blocks,
+        prompt: m.prompt,
       }))
       .filter((m) => !existing!.forwardedSteering.has(m.key));
     const steering = freshSteering.flatMap((m) => m.blocks);
@@ -912,11 +914,18 @@ async function handleChatCompletions(
     );
     const steeringToolId =
       steering.length > 0 ? resolvable.at(-1) : undefined;
+    // An open turn input takes them as the user's own messages, ahead of the
+    // results. Inside a tool result Claude reads them as tool output, which
+    // it may rightly distrust as an injected instruction.
+    const steerAsInput = steeringToolId !== undefined && existing.input && !existing.input.ended();
+    if (steerAsInput) {
+      for (const m of freshSteering) await existing.input!.push(m.prompt);
+    }
     for (const [toolId, tool] of existing.pendingTools) {
       const result = toolResults.get(toolId);
       if (result !== undefined) {
         tool.resolve(
-          toolId === steeringToolId ? withSteering(result, steering) : result,
+          toolId === steeringToolId && !steerAsInput ? withSteering(result, steering) : result,
         );
         existing.pendingTools.delete(toolId);
         resolved++;
@@ -1465,6 +1474,11 @@ async function startNewTurn(input: {
         ].join("\n")
       : "";
   const mainPrompt = withLeadingText(contextualPrompt, metaInstructions);
+  // A chat turn that can park on tools keeps its input open, so a message
+  // the user sends while a tool runs reaches Claude as their own message.
+  const turnInput = bridgeOpenCodeTools
+    ? createTurnInput(typeof mainPrompt === "string" ? mainPrompt || " " : mainPrompt)
+    : undefined;
   const queryPrompt: string | AsyncIterable<SdkUserPrompt> = metaKind === "title"
     ? [
         "Create a concise 3-7 word session title for the request quoted below.",
@@ -1475,9 +1489,11 @@ async function startNewTurn(input: {
         extractTextContent(titleSource?.content).trim(),
         "</request>",
       ].join("\n")
-    : typeof mainPrompt === "string"
-      ? mainPrompt || " "
-      : promptAsStream(mainPrompt);
+    : turnInput
+      ? turnInput.stream
+      : typeof mainPrompt === "string"
+        ? mainPrompt || " "
+        : promptAsStream(mainPrompt);
 
   const codeMode = openCodeToolNames.includes("execute") ? codeModeCatalog(messages) : "";
   const skills = openCodeToolNames.includes("skill") ? skillsCatalog(messages) : "";
@@ -1619,6 +1635,7 @@ async function startNewTurn(input: {
     reportedUsage: new Map(),
     forwardedSteering: new Set(),
     createdAt: Date.now(),
+    input: turnInput,
   };
   // Session binding and resume point follow every event the turn yields,
   // including the ones stop() reads after an interrupt: for a turn stopped
@@ -1778,6 +1795,8 @@ async function startNewTurn(input: {
         }
         if (raced.value.done) break;
         const event = raced.value.value;
+        // The turn is over: close its input so the CLI exits.
+        if ((event as { type?: string } | undefined)?.type === "result") turnInput?.end();
         trackMessageState(event);
         retryWaitMs = apiRetryDelayMs(event);
         logTurnUsage(event, { conversationKey, metaKind, model: queryModel });
@@ -1808,6 +1827,7 @@ async function startNewTurn(input: {
       }
     } finally {
       if (!handedOff) {
+        turnInput?.end();
         handle?.close();
         deleteBridge(bridgeId);
       }

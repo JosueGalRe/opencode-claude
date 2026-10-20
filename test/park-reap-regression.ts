@@ -21,6 +21,7 @@ async function promptText(prompt: StartClaudeQueryParams["prompt"]): Promise<str
   let text = "";
   for await (const part of prompt) {
     text += JSON.stringify((part as { message?: { content?: unknown } }).message?.content);
+    break;
   }
   return text;
 }

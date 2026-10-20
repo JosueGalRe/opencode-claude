@@ -1,7 +1,9 @@
 /**
  * Regression: a user message sent while a bridged tool is running (OpenCode
  * puts it after the tool result in the resume request) must reach Claude
- * with that tool result instead of being dropped. OpenCode's promoted-media
+ * instead of being dropped. It goes into the turn's open input as a user
+ * message (`priority: "next"`), not into the tool result, where Claude read
+ * it as an injected instruction. OpenCode's promoted-media
  * marker message is not steering. (Ported from the fork's 4ca2338.)
  *
  * Run: bun test/steering-regression.ts
@@ -43,10 +45,26 @@ async function main() {
 
   const { post, proxy } = await startMockedProxy("steer");
 
-  async function run(session: string, afterResult: unknown[]) {
+  /** Messages the turn's input carries after its prompt, as the SDK reads them. */
+  function drainInput(params: { prompt: unknown }, sink: any[]) {
+    const prompt = params.prompt as AsyncIterable<any>;
+    assert.ok(typeof prompt !== "string" && Symbol.asyncIterator in prompt, "a chat turn with tools keeps its input open");
+    void (async () => {
+      let first = true;
+      for await (const m of prompt) {
+        if (!first) sink.push(m);
+        first = false;
+      }
+    })();
+  }
+  const inputText = (sink: any[]) =>
+    sink.map((m) => (typeof m.message.content === "string" ? m.message.content : JSON.stringify(m.message.content))).join("\n");
+
+  async function run(session: string, afterResult: unknown[], sink: any[] = []) {
     let received: string | null = null;
-    proxy.setClaudeQueryStarter(async (params) =>
-      mockHandle(
+    proxy.setClaudeQueryStarter(async (params) => {
+      drainInput(params, sink);
+      return mockHandle(
         (async function* () {
           yield { type: "system", subtype: "init", session_id: `${session}-sess` };
           const res = await callTool(params, "bash", { command: "sleep 40" });
@@ -57,8 +75,8 @@ async function main() {
           yield textDelta("DONE");
           yield { type: "result", is_error: false, usage: {} };
         })(),
-      ),
-    );
+      );
+    });
     const first = (await (await post(session, {
       tools: [bashTool],
       messages: [{ role: "user", content: "run it" }],
@@ -79,12 +97,14 @@ async function main() {
   }
 
   try {
+    const sink: any[] = [];
     const steered = await run("steer-yes", [
       { role: "user", content: "Actually, the secret word is PINEAPPLE." },
-    ]);
-    assert.ok(steered, "tool result delivered");
-    assert.ok(steered!.startsWith("exit 0"));
-    assert.match(steered!, /<system-reminder>[\s\S]*PINEAPPLE[\s\S]*<\/system-reminder>/);
+    ], sink);
+    assert.equal(steered, "exit 0", "the tool result stays the tool's own");
+    assert.equal(sink.length, 1);
+    assert.equal(sink[0].message.content, "Actually, the secret word is PINEAPPLE.");
+    assert.equal(sink[0].priority, "next", "added after the running tool, within the turn");
 
     const plain = await run("steer-no", []);
     assert.equal(plain, "exit 0");
@@ -92,8 +112,10 @@ async function main() {
     // Results of one park arriving over two resume requests: the queued
     // message rides the first resolved result only, never both.
     const got: string[] = [];
-    proxy.setClaudeQueryStarter(async (params) =>
-      mockHandle(
+    const splitSink: any[] = [];
+    proxy.setClaudeQueryStarter(async (params) => {
+      drainInput(params, splitSink);
+      return mockHandle(
         (async function* () {
           yield { type: "system", subtype: "init", session_id: "steer-split-sess" };
           yield { type: "stream_event", event: { type: "message_start" } };
@@ -106,8 +128,8 @@ async function main() {
           yield textDelta("DONE");
           yield { type: "result", is_error: false, usage: {} };
         })(),
-      ),
-    );
+      );
+    });
     const turn = [{ role: "user", content: "run both" }];
     const parked = (await (await post("steer-split", { tools: [bashTool], messages: turn })).json()) as any;
     const calls = parked.choices[0].message.tool_calls;
@@ -130,7 +152,8 @@ async function main() {
       ],
     })).json()) as any;
     assert.match(String(done.choices[0].message.content), /DONE/);
-    assert.equal(got.join("\n").match(/MANGO/g)?.length, 1, "steering forwarded once");
+    assert.equal(inputText(splitSink).match(/MANGO/g)?.length, 1, "steering forwarded once");
+    assert.ok(!got.join("\n").includes("MANGO"), "never inside a tool result");
   } finally {
     proxy.setClaudeQueryStarter(null);
     await proxy.stopProxy();
