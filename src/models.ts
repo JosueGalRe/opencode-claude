@@ -19,7 +19,15 @@ export type ClaudeModel = {
   resolvedId?: string;
   /** Effort levels the model accepts; defaults to all when reasoning. */
   efforts?: ClaudeEffort[];
+  /** Runs in Claude Code's fast mode; `resolvedId` is the plain model. */
+  fast?: boolean;
 };
+
+/**
+ * Suffix of a fast-mode entry's id. OpenCode has no speed setting, so fast
+ * mode is a model of its own in the picker ("Opus 5.5 Fast").
+ */
+export const FAST_MODEL_SUFFIX = ":fast";
 
 const LIMIT_1M = { context: 1_000_000, output: 128_000 } as const;
 const LIMIT_200K = { context: 200_000, output: 64_000 } as const;
@@ -64,6 +72,7 @@ export type SdkModelRow = {
   displayName?: string;
   resolvedModel?: string;
   supportedEffortLevels?: string[];
+  supportsFastMode?: boolean;
 };
 
 /**
@@ -131,7 +140,19 @@ export function modelsFromSdk(rows: SdkModelRow[]): ClaudeModel[] {
   }
   // An alias row and its concrete row resolve to the same model.
   const seen = new Set<string>();
-  return out.filter((m) => !seen.has(m.id) && seen.add(m.id));
+  const unique = out.filter((m) => !seen.has(m.id) && seen.add(m.id));
+  // Fast mode where the CLI says the model supports it, next to its model.
+  const fastFamilies = new Set(
+    rows
+      .filter((row) => row?.supportsFastMode === true)
+      .map((row) => (row.resolvedModel || row.value || "").trim().replace(/\[1m\]$/i, ""))
+      .filter((id) => id && id !== "default"),
+  );
+  return unique.flatMap((m) =>
+    fastFamilies.has(m.id.replace(/\[1m\]$/i, ""))
+      ? [m, { ...m, id: `${m.id}${FAST_MODEL_SUFFIX}`, name: `${m.name} Fast`, resolvedId: m.id, fast: true }]
+      : [m],
+  );
 }
 
 let discovered: ClaudeModel[] | null = readCachedModels();
@@ -175,6 +196,11 @@ function writeCachedModels(models: ClaudeModel[]): void {
   } catch {
     // The cache only speeds up the next start.
   }
+}
+
+/** Whether the picked catalog entry runs in fast mode. */
+export function isFastModelId(modelId: string): boolean {
+  return getClaudeModels().find((m) => m.id === modelId)?.fast === true;
 }
 
 export function resolveClaudeModelId(modelId: string): string {

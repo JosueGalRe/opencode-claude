@@ -43,7 +43,7 @@ import {
   decodeClaudeModelSelection,
   EFFORT_HEADER,
 } from "./model-selection.js";
-import { getClaudeModels, modelNameFromId, resolveClaudeModelId } from "./models.js";
+import { getClaudeModels, isFastModelId, modelNameFromId, resolveClaudeModelId } from "./models.js";
 import {
   DIRECTORY_HEADER,
   KIND_HEADER,
@@ -1477,6 +1477,7 @@ async function startNewTurn(input: {
         ].join("\n")
       : "";
   const mainPrompt = withLeadingText(contextualPrompt, metaInstructions);
+  const fastMode = !isMetaRequest && isFastModelId(selection.modelId);
   // A chat turn that can park on tools keeps its input open, so a message
   // the user sends while a tool runs reaches Claude as their own message.
   const turnInput = bridgeOpenCodeTools
@@ -1599,6 +1600,7 @@ async function startNewTurn(input: {
     model: queryModel,
     resume: isMetaRequest ? undefined : resume,
     effort: isMetaRequest ? undefined : selection.effort,
+    fastMode,
     env,
     mcpServers: isMetaRequest ? undefined : mcpServers,
     autoCompactEnabled: !isMetaRequest,
@@ -1799,6 +1801,7 @@ async function startNewTurn(input: {
         }
         if (raced.value.done) break;
         const event = raced.value.value;
+        if (fastMode) logFastModeState(event, conversationKey);
         // The turn is over: close its input so the CLI exits.
         if ((event as { type?: string } | undefined)?.type === "result") turnInput?.end();
         trackMessageState(event);
@@ -1871,6 +1874,21 @@ async function startNewTurn(input: {
  * compacted chain before the summary, so Claude loses the whole
  * conversation.
  */
+/**
+ * A fast-mode turn the CLI runs at standard speed (extra usage off, plan or
+ * model not allowed) still answers; the log says why.
+ */
+function logFastModeState(event: unknown, conversationKey: string): void {
+  const e = event as { type?: string; subtype?: string; fast_mode_state?: string; fast_mode_disabled_reason?: string } | null;
+  if (e?.type !== "system" || e.subtype !== "init" || e.fast_mode_state === undefined) return;
+  if (e.fast_mode_state === "on") return;
+  log.warn("[opencode-claude] fast mode requested but not active", {
+    conversationKey,
+    state: e.fast_mode_state,
+    reason: e.fast_mode_disabled_reason,
+  });
+}
+
 function mainChainUuid(event: unknown): string | undefined {
   if (!event || typeof event !== "object") return undefined;
   const e = event as Record<string, unknown>;
