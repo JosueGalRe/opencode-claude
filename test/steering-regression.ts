@@ -1,8 +1,10 @@
 /**
  * Regression: a user message sent while a bridged tool is running (OpenCode
  * puts it after the tool result in the resume request) must reach Claude
- * with that tool result instead of being dropped. OpenCode's promoted-media
- * marker message must NOT be treated as steering.
+ * instead of being dropped. It goes into the turn's open input as a user
+ * message (`priority: "next"`), not into the tool result, where Claude read
+ * it as an injected instruction; the input closes with the turn. OpenCode's
+ * promoted-media marker message must NOT be treated as steering.
  *
  * Run: bun test/steering-regression.ts
  */
@@ -13,7 +15,8 @@ import { join } from "node:path";
 import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
 
 async function main() {
-  const { collectSteeringText } = await import("../src/steering.ts");
+  const { collectSteeringText, withSteering } = await import("../src/steering.ts");
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   const { SYNTHETIC_TOOL_MEDIA_PROMPT } = await import("../src/prompt.ts");
   assert.deepEqual(collectSteeringText([{ role: "user", content: "hi" }]), []);
   assert.deepEqual(
@@ -69,11 +72,22 @@ async function main() {
       body: JSON.stringify({ model: "sonnet", stream: false, tools: [bashTool], messages }),
     });
 
-  // Mock SDK turn: call bash, record the tool result text Claude receives,
-  // then finish the turn.
+  // Mock SDK turn: read the turn's input like the SDK, call bash, record the
+  // tool result text Claude receives, then finish the turn.
   async function run(session: string, afterResult: unknown[]) {
     let received: string | null = null;
+    const input: any[] = [];
+    let inputClosed: Promise<void> = Promise.resolve();
     setClaudeQueryStarter(async (params) => {
+      const prompt = params.prompt as AsyncIterable<any>;
+      assert.ok(typeof prompt !== "string" && Symbol.asyncIterator in prompt, "a chat turn with tools keeps its input open");
+      inputClosed = (async () => {
+        let first = true;
+        for await (const message of prompt) {
+          if (!first) input.push(message);
+          first = false;
+        }
+      })();
       const server = (params.mcpServers as Record<string, any>).opencode;
       const handlers =
         server.instance.server?._requestHandlers ??
@@ -114,34 +128,46 @@ async function main() {
     ]);
     const resumeJson = (await resume.json()) as any;
     assert.match(String(resumeJson.choices[0].message.content), /DONE/);
-    return received as string | null;
+    // The result closed the input, so the CLI can exit.
+    const closed = await Promise.race([inputClosed.then(() => true), sleep(1000).then(() => false)]);
+    assert.ok(closed, "the turn's input ends with its result");
+    return { received, input };
   }
 
   try {
     const steered = await run("steer-yes", [
       { role: "user", content: "Actually, the secret word is PINEAPPLE." },
     ]);
-    assert.ok(steered, "tool result delivered");
-    assert.ok(steered!.startsWith("exit 0"));
-    assert.match(steered!, /<system-reminder>[\s\S]*PINEAPPLE[\s\S]*<\/system-reminder>/);
+    assert.equal(steered.received, "exit 0", "the tool result stays the tool's own");
+    assert.equal(steered.input.length, 1);
+    assert.equal(steered.input[0].message.content, "Actually, the secret word is PINEAPPLE.");
+    assert.equal(steered.input[0].priority, "next", "added after the running tool, within the turn");
 
     const plain = await run("steer-no", []);
-    assert.equal(plain, "exit 0");
+    assert.equal(plain.received, "exit 0");
+    assert.deepEqual(plain.input, []);
 
     // A session context entry that changed while the tool ran arrives as
-    // `<system-update>` user text. It is the host's, not the user's message.
+    // `<system-update>` user text; it goes in as it is, like a user message.
     const update =
       '<system-update>\nThe context under "openchamber.pinned" changed and supersedes the previous value:\n<context key="openchamber.pinned">\nShip on Friday.\n</context>\n</system-update>';
-    const onlyUpdate = await run("steer-update", [{ role: "user", content: update }]);
-    assert.equal(onlyUpdate, `exit 0\n${update}`);
     const both = await run("steer-update-user", [
       { role: "user", content: update },
       { role: "user", content: "stop after this" },
     ]);
-    const reminder = /<system-reminder>[\s\S]*<\/system-reminder>/.exec(both!)?.[0] ?? "";
-    assert.ok(both!.startsWith(`exit 0\n${update}\n`));
-    assert.match(reminder, /the user sent[\s\S]*stop after this/);
-    assert.doesNotMatch(reminder, /Ship on Friday/);
+    assert.equal(both.received, "exit 0");
+    assert.deepEqual(both.input.map((m) => m.message.content), [update, "stop after this"]);
+
+    // Without an open input (a closed one, or a turn from before this
+    // change) steering rides the tool result; a `<system-update>` there is
+    // the host's, not passed off as the user's message.
+    const result = [{ type: "text" as const, text: "exit 0" }];
+    assert.deepEqual(withSteering(result, [update]).map((b: any) => b.text), ["exit 0", update]);
+    const fallback = withSteering(result, [update, "stop after this"]).map((b: any) => b.text);
+    assert.equal(fallback.length, 3);
+    assert.equal(fallback[1], update);
+    assert.match(fallback[2]!, /<system-reminder>[\s\S]*the user sent[\s\S]*stop after this[\s\S]*<\/system-reminder>/);
+    assert.doesNotMatch(fallback[2]!, /Ship on Friday/);
   } finally {
     await stopProxy();
   }

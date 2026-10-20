@@ -85,7 +85,12 @@ export function mockHandle(stream: AsyncIterable<unknown>): ClaudeQueryHandle {
 export async function promptText(prompt: StartClaudeQueryParams["prompt"]): Promise<string> {
   if (typeof prompt === "string") return prompt;
   const parts: unknown[] = [];
-  for await (const part of prompt) parts.push(part);
+  for await (const part of prompt) {
+    parts.push(part);
+    // A chat turn's input stays open while the turn runs: only the first
+    // message is the prompt.
+    break;
+  }
   return JSON.stringify(parts);
 }
 

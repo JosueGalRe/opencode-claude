@@ -3,7 +3,7 @@
  * (Cursor bridge-pool pattern).
  */
 import { withGracefulStop, type ClaudeQueryHandle } from "./query.js";
-import type { McpToolResultContent } from "./prompt.js";
+import type { McpToolResultContent, TurnInput } from "./prompt.js";
 
 export type ParkedToolCall = {
   id: string;
@@ -23,6 +23,8 @@ export type ParkedBridge = {
   seenAssistantUsageIds: Set<string>;
   /** Continues the turn's SDK stream once every parked call is resolved. */
   resume: () => AsyncGenerator<unknown, void, unknown>;
+  /** Open input of a chat turn: mid-turn user messages go in here. */
+  input?: TurnInput;
 };
 
 /**
@@ -108,6 +110,7 @@ export function deleteBridge(id: string): void {
   } catch {
     // ignore — the CLI child may already be gone
   }
+  bridge.input?.end();
 }
 
 /** Remove immediately, but keep the settling stop visible to the next spawn. */
@@ -126,6 +129,7 @@ export function stopBridge(id: string, reason = "Bridge closed"): Promise<void> 
       // tool error with another model call before its interrupt arrives.
       for (const tool of bridge.pendingTools.values()) tool.reject(new Error(reason));
       bridge.pendingTools.clear();
+      bridge.input?.end();
     }
   })();
   pending.add(stop);

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Messages sent mid-turn arrive as yours, not as tool output** (ported
+  from upstream 1.5.0): a message you sent while Claude ran a tool was
+  appended to that tool's result as a `<system-reminder>`, and Claude may
+  read tool output as an injected instruction. A chat turn with tools now
+  keeps its input open until its result, and the message goes in as a user
+  message with priority `next`; Claude Code queues it and shows it to Claude
+  the way it does natively for a message typed while a tool runs. The tool
+  result is the fallback when the turn's input is already closed.
 - **Tool calls with string-encoded arguments work** (ported from upstream
   1.5.0): Claude sometimes sends a typed argument as its string encoding
   (`"true"`, `"300000"`, a JSON array), and the bridge rejected the call with
@@ -18,8 +26,9 @@
   your message** (ported from upstream 1.4.2): OpenCode sends a changed
   session context entry (OpenChamber's guidance, notes, memory, checkout) as
   `<system-update>` user text. While a tool ran, it was forwarded inside the
-  "the user sent the following message(s)" reminder; it now goes with the
-  tool result as is. The context itself already reached Claude here: it sits
+  "the user sent the following message(s)" reminder; where the tool result
+  still carries mid-turn messages (see above), it now goes there as is. The
+  context itself already reached Claude here: it sits
   among the V2 instruction sources the plugin forwards.
 - **Full tool instructions** (ported from upstream 1.4.2): Claude Code cuts
   MCP tool descriptions at 4096 characters (2048 before 2.1.296), so long

@@ -41,6 +41,8 @@ async function main() {
       for await (const part of params.prompt as AsyncIterable<any>) {
         const content = part?.message?.content;
         promptText += typeof content === "string" ? content : JSON.stringify(content);
+        // A chat turn's input stays open while the turn runs.
+        break;
       }
     }
     seen.push({ resume: params.resume as string | undefined, prompt: promptText });

@@ -60,6 +60,9 @@ async function promptText(prompt: StartClaudeQueryParams["prompt"]): Promise<str
   for await (const part of prompt) {
     const content = (part as { message?: { content?: unknown } }).message?.content;
     text += typeof content === "string" ? content : JSON.stringify(content);
+    // A chat turn's input stays open while the turn runs: only the first
+    // message is the prompt.
+    break;
   }
   return text;
 }

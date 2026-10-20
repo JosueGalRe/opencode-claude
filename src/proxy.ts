@@ -108,6 +108,7 @@ import {
   priorMessagesOf,
   historyAfterUserCount,
   promptAsStream,
+  createTurnInput,
   userHistoryFingerprints,
   withoutSystemReminders,
   SYNTHETIC_TOOL_MEDIA_PROMPT,
@@ -920,12 +921,12 @@ function findParkedBridge(
  * before all results arrived — re-emit the open calls instead of starting a
  * parallel Claude turn.
  */
-function answerParkedTools(
+async function answerParkedTools(
   bridge: ParkedBridge,
   answeredStep: AnsweredToolStep | null,
   messages: OpenAIMessage[],
   priorMessages: OpenAIMessage[],
-): AsyncIterable<unknown> {
+): Promise<AsyncIterable<unknown>> {
   const results = answeredStep?.results ?? new Map<string, McpToolResultContent[]>();
   const resolvable = [...bridge.pendingTools.keys()].filter((id) => results.has(id));
   const lastResolved = resolvable.at(-1);
@@ -960,17 +961,25 @@ function answerParkedTools(
       userHistoryBoundary(userHistoryFingerprints(priorMessages), history));
     setHistoryFingerprint(bridge.conversationKey, history);
   }
+  // An open turn input takes them as the user's own messages, ahead of the
+  // results. Inside a tool result Claude reads them as tool output, which it
+  // may rightly distrust as an injected instruction.
+  const steerAsInput = steering.length > 0 && !!bridge.input && !bridge.input.ended();
+  if (steerAsInput) {
+    for (const text of steering) await bridge.input!.push(text);
+  }
   for (const toolId of resolvable) {
     const result = results.get(toolId)!;
     bridge.pendingTools
       .get(toolId)!
-      .resolve(toolId === lastResolved && steering.length > 0 ? withSteering(result, steering) : result);
+      .resolve(toolId === lastResolved && steering.length > 0 && !steerAsInput ? withSteering(result, steering) : result);
     bridge.pendingTools.delete(toolId);
   }
   if (steering.length > 0) {
     log.info("[opencode-claude] forwarding mid-turn user steering", {
       conversationKey: bridge.conversationKey,
       steeringChars: steering.join("\n\n").length,
+      asInput: steerAsInput,
     });
   }
   if (bridge.pendingTools.size === 0) {
@@ -1286,7 +1295,7 @@ async function handleChatCompletions(
   const answeredStep = isMetaRequest ? null : collectAnsweredToolStep(messages);
   const parkedBridge = findParkedBridge(conversationKey, answeredStep, messages);
   if (parkedBridge) {
-    const events = answerParkedTools(parkedBridge, answeredStep, messages, priorMessages);
+    const events = await answerParkedTools(parkedBridge, answeredStep, messages, priorMessages);
     return turnResponse(req, events, responseModel, parkedBridge, stream);
   }
   // Includes stops already settling after a V2 stop event or park reaping.
@@ -1462,13 +1471,20 @@ async function handleChatCompletions(
     if (boundary) recordTurnStart(conversationKey, boundary,
       userHistoryBoundary(userHistoryFingerprints(priorMessages), seenHistory));
   }
+  // A chat turn that can park on tools keeps its input open, so a message
+  // the user sends while a tool runs reaches Claude as their own message.
+  const turnInput = bridged
+    ? createTurnInput(typeof contextualPrompt === "string" ? contextualPrompt || " " : contextualPrompt)
+    : undefined;
   const handle = withGracefulStop(await queryStarter({
     prompt:
       metaKind === "title"
         ? titlePrompt(messages)
-        : typeof contextualPrompt === "string"
-          ? contextualPrompt || " "
-          : promptAsStream(contextualPrompt),
+        : turnInput
+          ? turnInput.stream
+          : typeof contextualPrompt === "string"
+            ? contextualPrompt || " "
+            : promptAsStream(contextualPrompt),
     cwd,
     model,
     resume,
@@ -1513,6 +1529,13 @@ async function handleChatCompletions(
     systemPrompt,
   }));
   turn.attach(handle);
+  // The turn is over: close its input so the CLI exits. Stop reads events
+  // too, so this is not left to TurnRunner.
+  if (turnInput) {
+    handle.onEvent((event) => {
+      if ((event as { type?: unknown } | null)?.type === "result") turnInput.end();
+    });
+  }
 
   if (seenHistory) {
     let boundSessionId: string | null = null;
@@ -1537,6 +1560,7 @@ async function handleChatCompletions(
     pendingTools: turn.pendingTools,
     seenAssistantUsageIds: new Set(),
     resume: () => turn.resume(),
+    input: turnInput,
   };
   putBridge(bridge);
   releaseSpawnLock();
