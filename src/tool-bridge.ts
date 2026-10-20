@@ -91,6 +91,61 @@ export function expectedParallelGroup(names: readonly string[]): number {
   return Math.max(1, count);
 }
 
+/** JSON Schema types a property accepts; empty when it constrains none. */
+function schemaTypes(schema: unknown): string[] {
+  if (!schema || typeof schema !== "object") return [];
+  const { type, anyOf, oneOf } = schema as {
+    type?: unknown;
+    anyOf?: unknown;
+    oneOf?: unknown;
+  };
+  if (typeof type === "string") return [type];
+  if (Array.isArray(type)) return type.filter((t): t is string => typeof t === "string");
+  const variants = [anyOf, oneOf].find(Array.isArray) as unknown[] | undefined;
+  if (!variants) return [];
+  const types = variants.map(schemaTypes);
+  return types.some((t) => t.length === 0) ? [] : types.flat();
+}
+
+/**
+ * Claude sometimes sends a scalar or JSON argument as its string encoding
+ * ("true", "300000", a JSON array). Claude Code's own tools accept that, so
+ * decode a string for a parameter that cannot take one; anything that does
+ * not decode to an accepted type is left for validation to reject.
+ */
+export function coerceStringArgument(value: unknown, schema: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const types = schemaTypes(schema);
+  if (types.length === 0 || types.includes("string")) return value;
+  const text = value.trim();
+  if (types.includes("boolean") && (text === "true" || text === "false")) {
+    return text === "true";
+  }
+  if ((types.includes("number") || types.includes("integer")) && text !== "") {
+    const number = Number(text);
+    if (
+      Number.isFinite(number) &&
+      (types.includes("number") || Number.isInteger(number))
+    ) {
+      return number;
+    }
+  }
+  if (types.includes("null") && text === "null") return null;
+  if (types.includes("array") || types.includes("object")) {
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (
+        Array.isArray(parsed)
+          ? types.includes("array")
+          : parsed !== null && typeof parsed === "object" && types.includes("object")
+      ) {
+        return parsed;
+      }
+    } catch {}
+  }
+  return value;
+}
+
 /** JSON Schema (stringified) -> SDK-verified zod shape, or null. */
 const faithfulShapeCache = new Map<string, Record<string, unknown> | null>();
 
@@ -247,6 +302,26 @@ export async function buildOpenCodeMcpServer(
       alwaysLoad: true,
       tools: mcpTools,
     });
+
+    // Decode string-encoded arguments before the SDK validates them. Not in
+    // the zod shape: the SDK lists a preprocessed field as optional.
+    const properties = new Map(tools.map((t) => [t.function?.name, t.function?.parameters?.properties]));
+    const handlers = (server as { instance?: { server?: { _requestHandlers?: Map<string, Function> } } })
+      .instance?.server?._requestHandlers;
+    const callTool = handlers?.get("tools/call");
+    if (handlers && callTool) {
+      handlers.set("tools/call", (request: { params?: { name?: string; arguments?: unknown } }, extra: unknown) => {
+        const props = properties.get(request.params?.name);
+        const args = request.params?.arguments;
+        if (!props || typeof props !== "object" || !args || typeof args !== "object") {
+          return callTool(request, extra);
+        }
+        const decoded = Object.fromEntries(
+          Object.entries(args).map(([key, value]) => [key, coerceStringArgument(value, (props as Record<string, unknown>)[key])]),
+        );
+        return callTool({ ...request, params: { ...request.params, arguments: decoded } }, extra);
+      });
+    }
 
     return { opencode: server };
   } catch (err) {

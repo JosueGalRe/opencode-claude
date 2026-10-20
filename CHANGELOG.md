@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Tool calls with string-encoded arguments work** (ported from upstream
+  1.5.0): Claude sometimes sends a typed argument as its string encoding
+  (`"true"`, `"300000"`, a JSON array), and the bridge rejected the call with
+  -32602 before OpenCode saw it. Such strings are decoded to the declared
+  type before validation; values that don't decode are still rejected.
 - **Session titles in your language** (ported from upstream 1.5.0): titles
   are written in the language of the request.
 - **Project folders with non-ASCII names work** (ported from upstream
