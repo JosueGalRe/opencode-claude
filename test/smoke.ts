@@ -1229,7 +1229,12 @@ async function main() {
         String(titleOptions!.systemPrompt),
         /^You are a text generation helper running in OpenCode through the Claude Code harness\./,
       );
-      assert.match(String(titleOptions!.prompt), /<request>\nExplain how binary search trees work\n<\/request>/);
+      // The host's title prompt leads; the built-in wording is only a fallback.
+      assert.match(
+        String(titleOptions!.prompt),
+        /^<instructions>\nYou are a title generator\. Generate a brief title\. Output only the title\.\n<\/instructions>\n\nExplain how binary search trees work$/,
+      );
+      assert.doesNotMatch(String(titleOptions!.prompt), /3-7 word/);
     } finally {
       setClaudeQueryStarter(null);
     }
