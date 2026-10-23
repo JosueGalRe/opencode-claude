@@ -3,9 +3,9 @@
 ## 1.5.0 - 2026-10-21
 
 - **Fast mode**: models that support it, like Opus 5.5, now have a separate
-  "Fast" entry in the model picker. It's billed as extra usage on your
-  account; if fast mode isn't available, the turn runs at normal speed and
-  the log says why. Thanks to @linghengqian.
+  "Fast" entry in the model picker. Fast turns draw your plan limits
+  faster; if fast mode isn't available on your account, the turn runs at
+  normal speed and the log says why. Thanks to @linghengqian.
 - **Fix: messages sent mid-turn looked like tool output**: a message you
   steered in while Claude ran tools arrived inside the tool result, and
   Claude sometimes treated it as a prompt injection. It now arrives as your
