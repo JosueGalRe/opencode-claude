@@ -130,10 +130,22 @@ export function metaInstructions(
 }
 
 /**
- * Prompt for a title request. The user text is quoted as data so Claude
- * titles it instead of answering it.
+ * Prompt for a title request. The host's title agent prompt (OpenChamber's
+ * title style, or the user's own `agents.title.system`) decides the title;
+ * OpenCode already frames its input as text to name. Without one, the user
+ * text is quoted as data so Claude titles it instead of answering it.
  */
 export function titlePrompt(messages: MessageLike[]): string {
+  const system = metaSystemPrompt(messages).trim();
+  if (system) {
+    return [
+      "<instructions>",
+      system,
+      "</instructions>",
+      "",
+      extractTextContent(latestUserMessage(messages)?.content).trim(),
+    ].join("\n");
+  }
   return [
     "Create a concise 3-7 word session title for the request quoted below.",
     "Output only the title, with no quotation marks or punctuation at the end.",

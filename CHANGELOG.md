@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Session titles follow the host's title prompt** (ported from upstream
+  5d65720, after 1.5.0): OpenCode sends its title agent's system prompt with every title
+  request, and OpenChamber replaces it with its own title style. The plugin
+  dropped it and used a fixed 3-7 word template, so Claude sessions got long,
+  summary-like titles and `agents.title.system` had no effect. The host's
+  prompt now leads the title turn; the fixed template is the fallback for
+  requests without one.
 - **Fast mode** (ported from upstream 1.5.0): models the CLI marks
   `supportsFastMode` (today Opus 5.5, Opus 5 and Opus 4.8) get a separate
   "Fast" entry in the model picker, `<id>:fast`. It runs chat turns on the

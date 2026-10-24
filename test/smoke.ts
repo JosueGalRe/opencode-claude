@@ -1003,6 +1003,14 @@ async function main() {
         (titleOptions!.env as Record<string, unknown>).CLAUDE_CODE_OAUTH_TOKEN,
         undefined,
       );
+      // The host's title prompt leads; the built-in wording is only a fallback.
+      assert.equal(
+        String(titleOptions!.prompt),
+        "<instructions>\nYou are a title generator. Generate a brief title. Output only the title.\n</instructions>\n\nExplain how binary search trees work",
+      );
+      const { titlePrompt } = await import("../src/request-kind.ts");
+      const fallback = titlePrompt([{ role: "user", content: "Explain how binary search trees work" }]);
+      assert.match(fallback, /3-7 word[\s\S]*<request>\nExplain how binary search trees work\n<\/request>/);
       assert.deepEqual(titleOptions!.tools, []);
       assert.deepEqual(titleOptions!.settingSources, []);
       // The user's Claude Code memory stays out of utility turns.
@@ -1026,7 +1034,6 @@ async function main() {
         String(titleOptions!.systemPrompt),
         /Claude Code harness[\s\S]*You generate short session titles/,
       );
-      assert.match(String(titleOptions!.prompt), /<request>\nExplain how binary search trees work\n<\/request>/);
     } finally {
       setClaudeQueryStarter(null);
     }
