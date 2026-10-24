@@ -1591,8 +1591,8 @@ async function handleChatCompletions(
 }
 
 /**
- * A fast-mode turn the CLI runs at standard speed (extra usage off, plan or
- * model not allowed) still answers; the log says why.
+ * A fast-mode turn the CLI runs at standard speed (plan, account or model
+ * not allowed) still answers; the log says why.
  */
 function logFastModeState(event: unknown, conversationKey: string): void {
   const e = event as {

@@ -202,7 +202,7 @@ export type StartClaudeQueryParams = {
   forkSession?: boolean;
   permissionMode?: string;
   effort?: ClaudeEffort | string;
-  /** Claude Code's fast mode (billed as extra usage on subscriptions). */
+  /** Claude Code's fast mode (draws plan limits faster). */
   fastMode?: boolean;
   systemPrompt?:
     | string
