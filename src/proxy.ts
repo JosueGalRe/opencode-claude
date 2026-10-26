@@ -2930,7 +2930,7 @@ type MapState = {
   /** This response carried answer text or tool calls. */
   producedContent?: boolean;
   /** A thinking block after the first, held until its signature arrives. */
-  heldThinking?: { index: number; text: string; narration: boolean };
+  heldThinking?: { index: number; text: string; narration: boolean; first: boolean };
   /** The turn's Claude account, whose limits the events record. */
   configDir?: string;
 };
@@ -3115,18 +3115,19 @@ function mapSdkEvent(event: unknown, state?: MapState): MappedEvent {
         ? { kind: "usage-delta", usage, messageId: state?.messageId ?? null }
         : { kind: "ignore" };
     }
-    // Real thinking is always block 0 and streams live; a later thinking block
-    // (the narration, sent in one burst) is held until its signature arrives.
+    // The narration comes in one burst, so a thinking block is held until its
+    // signature arrives. Block 0 may also be narration when Claude goes
+    // straight to a tool; it is released as reasoning on its second delta,
+    // so real thinking still streams live.
     const held = state && !e.parent_tool_use_id && state.heldThinking?.index === ev.index ? state.heldThinking : undefined;
     if (
       ev.type === "content_block_start" &&
       state &&
       !e.parent_tool_use_id &&
       typeof ev.index === "number" &&
-      ev.index > 0 &&
       (ev.content_block as { type?: unknown } | undefined)?.type === "thinking"
     ) {
-      state.heldThinking = { index: ev.index, text: "", narration: false };
+      state.heldThinking = { index: ev.index, text: "", narration: false, first: ev.index === 0 };
       return { kind: "ignore" };
     }
     if (ev.type === "content_block_stop" && held && state) {
@@ -3147,6 +3148,10 @@ function mapSdkEvent(event: unknown, state?: MapState): MappedEvent {
         typeof (delta.thinking ?? delta.text) === "string"
       ) {
         const text = String(delta.thinking ?? delta.text);
+        if (held && held.first && held.text) {
+          state!.heldThinking = undefined;
+          return { kind: "reasoning", text: held.text + text };
+        }
         if (held) {
           held.text += text;
           return { kind: "ignore" };
