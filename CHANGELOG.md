@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.6.0 - 2026-10-26
+
+- **A Claude account per project**: map project folders to another Claude
+  login with the `configDirs` option, so a work project can run on your
+  company plan and the rest on your own. Each account keeps its own limits.
+  Thanks to @dangreenlee.
+- **Titles in your host's style**: Claude now names sessions with the title
+  prompt OpenChamber or your `agents.title.system` sets, instead of the
+  plugin's own template, so titles come out short and easy to scan.
+- **Fix: the note before a question showed as thinking**: when Claude went
+  straight to a tool, like asking you something, the note explaining it hid
+  in the collapsed Thought block. It now shows as a message. Thanks to
+  @drsmile1001.
+- **Fast mode wording**: fast turns draw your plan limits faster; the 1.5.0
+  notes wrongly said they're billed as extra usage.
+
 ## 1.5.0 - 2026-10-21
 
 - **Fast mode**: models that support it, like Opus 5.5, now have a separate
