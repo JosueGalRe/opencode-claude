@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The update before a tool call shows as text when it opens the reply**
+  (ported from upstream 1.6.0): the narration fix only held thinking blocks
+  after the first, so when Opus 5.5 went straight to a tool (a question to
+  you, for example) its update landed in the collapsed Thinking block and
+  the tool call appeared with no explanation. The first thinking block is
+  held too and released as reasoning on its second delta, so real thinking
+  still streams live.
 - **Session titles follow the host's title prompt** (ported from upstream
   5d65720, after 1.5.0): OpenCode sends its title agent's system prompt with every title
   request, and OpenChamber replaces it with its own title style. The plugin

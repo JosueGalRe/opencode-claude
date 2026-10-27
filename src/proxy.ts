@@ -2224,7 +2224,7 @@ type MapState = {
   refusalText?: string;
   shownNotices?: Set<string>;
   producedContent?: boolean;
-  heldThinking?: { index: number; text: string; narration: boolean };
+  heldThinking?: { index: number; text: string; narration: boolean; first: boolean };
 };
 
 /**
@@ -2372,18 +2372,19 @@ function mapSdkEvent(event: unknown, state?: MapState): MappedEvent {
     // holds the final output_tokens the assistant event does not have yet.
     const streamUsage = usageFromStreamEvent(event);
     if (streamUsage) return { kind: "usage-stream", usage: streamUsage };
-    // Real thinking is always block 0 and streams live; a later thinking block
-    // (the narration, sent in one burst) is held until its signature arrives.
+    // The narration comes in one burst, so a thinking block is held until its
+    // signature arrives. Block 0 is narration when Claude goes straight to a
+    // tool; it is released as reasoning on its second delta, so real thinking
+    // still streams live.
     const held = state && !e.parent_tool_use_id && state.heldThinking?.index === ev.index ? state.heldThinking : undefined;
     if (
       ev.type === "content_block_start" &&
       state &&
       !e.parent_tool_use_id &&
       typeof ev.index === "number" &&
-      ev.index > 0 &&
       (ev.content_block as { type?: unknown } | undefined)?.type === "thinking"
     ) {
-      state.heldThinking = { index: ev.index, text: "", narration: false };
+      state.heldThinking = { index: ev.index, text: "", narration: false, first: ev.index === 0 };
       return { kind: "ignore" };
     }
     if (ev.type === "content_block_stop" && held && state) {
@@ -2404,6 +2405,10 @@ function mapSdkEvent(event: unknown, state?: MapState): MappedEvent {
         typeof (delta.thinking ?? delta.text) === "string"
       ) {
         const text = String(delta.thinking ?? delta.text);
+        if (held && held.first && held.text) {
+          state!.heldThinking = undefined;
+          return { kind: "reasoning", text: held.text + text };
+        }
         if (held) {
           held.text += text;
           return { kind: "ignore" };

@@ -18,9 +18,9 @@ const stop = (reason: string, parent_tool_use_id: string | null = null) => ({
 });
 const result = (more: Record<string, unknown> = {}) => ({ type: "result", is_error: false, usage: {}, ...more });
 const block = (index: number, event: Record<string, unknown>) => ({ type: "stream_event", event: { index, ...event } });
-const thinkingBlock = (index: number, value: string, tag: string) => [
+const thinkingBlock = (index: number, value: string | string[], tag: string) => [
   block(index, { type: "content_block_start", content_block: { type: "thinking", thinking: "", signature: "" } }),
-  block(index, { type: "content_block_delta", delta: { type: "thinking_delta", thinking: value } }),
+  ...[value].flat().map((chunk) => block(index, { type: "content_block_delta", delta: { type: "thinking_delta", thinking: chunk } })),
   block(index, { type: "content_block_delta", delta: { type: "signature_delta", signature: Buffer.from(`\x08\x04B\t${tag}`).toString("base64") } }),
   block(index, { type: "content_block_stop" }),
 ];
@@ -147,21 +147,40 @@ async function main() {
     assert.match(notices, /Stop hook warning/);
     assert.doesNotMatch(notices, /UI tip/);
 
-    // When: Opus 5.5 sends its pre-tool update as a narration-signed thinking block.
-    for (const stream of [true, false]) {
-      turn(events(...thinkingBlock(0, "plan", "narration"), ...thinkingBlock(1, "Voy a probar Waze.", "narration"),
-        ...thinkingBlock(2, " later", "thinking"), result()));
-      const res = await post(`narration-${stream}`, stream);
-      let out: { content?: string; reasoning?: string };
+    // When: Opus 5.5 sends its pre-tool update as a narration-signed thinking
+    // block. A thinking block is held until its signature; block 0 is
+    // narration when Claude goes straight to a tool, and once it streams a
+    // second delta it is real thinking and goes out live.
+    const narrationCases = [
+      {
+        name: "after-thinking",
+        blocks: [thinkingBlock(0, ["pl", "an"], "thinking"), thinkingBlock(1, "Voy a probar Waze.", "narration"),
+          thinkingBlock(2, " later", "thinking")],
+        expected: { content: "Voy a probar Waze.", reasoning: "plan later" },
+      },
+      {
+        name: "first-block",
+        blocks: [thinkingBlock(0, "¿En qué rama lo pruebo?", "narration")],
+        expected: { content: "¿En qué rama lo pruebo?", reasoning: "" },
+      },
+      {
+        name: "short-thinking",
+        blocks: [thinkingBlock(0, "plan", "thinking")],
+        expected: { content: "", reasoning: "plan" },
+      },
+    ];
+    for (const { name, blocks, expected } of narrationCases) for (const stream of [true, false]) {
+      turn(events(...blocks.flat(), result()));
+      const res = await post(`narration-${name}-${stream}`, stream);
+      let out: { content: string; reasoning: string };
       if (stream) {
         const { content, reasoning } = sse(await res.text());
         out = { content, reasoning };
       } else {
         const message = ((await res.json()) as Body).choices[0]?.message;
-        out = { content: message?.content, reasoning: message?.reasoning_content };
+        out = { content: message?.content ?? "", reasoning: message?.reasoning_content ?? "" };
       }
-      // Block 0 streams live as reasoning whatever its tag; only later blocks are held.
-      assert.deepEqual(out, { content: "Voy a probar Waze.", reasoning: "plan later" });
+      assert.deepEqual(out, expected, `${name} stream=${stream}`);
     }
 
     // When: CLI exhausts 5xx retries but labels an empty result success.
