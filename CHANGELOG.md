@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Turns report the plugin's own name, not `sdk-ts`**: left unset,
+  Claude Code's entrypoint is `sdk-ts`, and several controlled A/B tests in
+  anthropics/claude-code#97074 measure `sdk-*` turns using the 5-hour window
+  about twice as fast per token as other clients. Every `claude` process the
+  plugin starts now runs with `CLAUDE_CODE_ENTRYPOINT=josuegalre-opencode-claude`,
+  replacing an inherited value; `OPENCODE_CLAUDE_ENTRYPOINT` picks another
+  (`sdk-ts` restores the SDK's). The name is the plugin's own, never another
+  client's (`cli`, `claude-vscode`). Whether Anthropic intends the `sdk-*`
+  weighting is not stated, so this may change.
 - **The update before a tool call shows as text when it opens the reply**
   (ported from upstream 1.6.0): the narration fix only held thinking blocks
   after the first, so when Opus 5.5 went straight to a tool (a question to

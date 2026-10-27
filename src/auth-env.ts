@@ -20,6 +20,17 @@ export const AUTH_OVERRIDE_ENV_KEYS = Object.freeze([
 export const MCP_DESCRIPTION_LIMIT = 8192;
 
 /**
+ * Name Claude Code reports for this plugin (CLAUDE_CODE_ENTRYPOINT, sent as
+ * cc_entrypoint on every request). Left unset, the Agent SDK says sdk-ts,
+ * and sdk-* turns use the 5-hour window about twice as fast per token as
+ * other clients (anthropics/claude-code#97074). The plugin's own name, in
+ * the CLI's format for custom names; never another client's (cli,
+ * claude-vscode). An inherited value (OpenCode started from a Claude
+ * session) is replaced; OPENCODE_CLAUDE_ENTRYPOINT picks another, e.g. sdk-ts.
+ */
+export const CLAUDE_ENTRYPOINT = "josuegalre-opencode-claude";
+
+/**
  * Build a child-process env for Claude Code subscription mode.
  * Starts from process.env (or provided base), preserves PATH, then deletes
  * credential overrides so the CLI exclusively owns authentication.
@@ -34,5 +45,6 @@ export function buildClaudeCodeChildEnv(
   if (!env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH?.trim()) {
     env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(MCP_DESCRIPTION_LIMIT);
   }
+  env.CLAUDE_CODE_ENTRYPOINT = env.OPENCODE_CLAUDE_ENTRYPOINT?.trim() || CLAUDE_ENTRYPOINT;
   return env;
 }
