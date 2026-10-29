@@ -522,7 +522,7 @@ async function main() {
   const models = getClaudeModels();
   assert.ok(models.length >= 4);
   assert.ok(models.some((m) => m.id === "claude-sonnet-5"));
-  assert.ok(models.some((m) => m.id === "claude-opus-5-5[1m]"));
+  assert.ok(models.some((m) => m.id === "claude-opus-5-5"));
   // 1.0 aliases are no longer listed; the proxy itself still passes them on
   assert.ok(!models.some((m) => m.id === "opus" || m.id === "sonnet"));
   assert.equal(resolveClaudeModelId("sonnet"), "sonnet");
@@ -552,7 +552,7 @@ async function main() {
     assert.equal(row!.name, "Opus 5");
   }
 
-  // The CLI's own model list becomes the catalog, with t3code's 1M rules
+  // The CLI's own model list becomes the catalog, with the 1M rules
   {
     const fromCli = modelsFromSdk([
       { value: "default", displayName: "Default (recommended)", resolvedModel: "claude-opus-5-5", supportedEffortLevels: ["low", "high"] },
@@ -560,15 +560,29 @@ async function main() {
       { value: "sonnet", displayName: "Sonnet 5", resolvedModel: "claude-sonnet-5", supportedEffortLevels: ["low", "high"] },
       { value: "claude-opus-4-8", displayName: "Opus 4.8", resolvedModel: "claude-opus-4-8" },
       { value: "haiku", displayName: "Haiku 4.5", resolvedModel: "claude-haiku-4-5-20251001" },
+      { value: "claude-opus-4-6", displayName: "Opus 4.6", resolvedModel: "claude-opus-4-6" },
+      { value: "claude-sonnet-4-6", displayName: "Sonnet 4.6", resolvedModel: "claude-sonnet-4-6" },
     ]);
     const byId = Object.fromEntries(fromCli.map((m) => [m.id, m]));
     assert.deepEqual(
       fromCli.map((m) => m.id),
-      ["claude-opus-5-5[1m]", "claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5-20251001"],
+      [
+        "claude-opus-5-5",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+        "claude-haiku-4-5-20251001",
+        "claude-opus-4-6",
+        "claude-opus-4-6[1m]",
+        "claude-sonnet-4-6",
+      ],
     );
-    assert.equal(byId["claude-opus-5-5[1m]"]!.contextWindow, 1_000_000);
-    assert.equal(byId["claude-opus-5-5[1m]"]!.name, "Opus 5.5");
-    assert.deepEqual(buildEffortVariants(byId["claude-opus-5-5[1m]"]!), ["low", "high"]);
+    // Opus 5.5 runs at 1M under its plain id: no [1m] variant.
+    assert.equal(byId["claude-opus-5-5"]!.contextWindow, 1_000_000);
+    assert.equal(byId["claude-opus-5-5"]!.name, "Opus 5.5");
+    assert.deepEqual(buildEffortVariants(byId["claude-opus-5-5"]!), ["low", "high"]);
+    assert.equal(byId["claude-opus-4-6"]!.contextWindow, 200_000);
+    assert.equal(byId["claude-opus-4-6[1m]"]!.contextWindow, 1_000_000);
+    assert.equal(byId["claude-sonnet-4-6"]!.contextWindow, 200_000, "Sonnet 4.6's 1M needs usage credits");
     assert.equal(byId["claude-sonnet-5"]!.contextWindow, 1_000_000);
     assert.equal(byId["claude-opus-4-8"]!.contextWindow, 1_000_000);
     assert.deepEqual(buildEffortVariants(byId["claude-haiku-4-5-20251001"]!), []);
@@ -1062,7 +1076,7 @@ async function main() {
       { value: "claude-fable-5-1", resolvedModel: "claude-fable-5-1", supportedEffortLevels: ["low", "high"] },
       { value: "claude-opus-5", resolvedModel: "claude-opus-5", supportedEffortLevels: ["low", "high"] },
     ]));
-    assert.equal(catalogIdForFallback("claude-opus-5", "claude-fable-5-1[1m]"), "claude-opus-5[1m]");
+    assert.equal(catalogIdForFallback("claude-opus-5", "claude-fable-5-1[1m]"), "claude-opus-5", "Opus 5 is 1M under its plain id");
     assert.match(
       modelFallbackNote({ original_model: "claude-fable-5-1", fallback_model: "claude-opus-5", api_refusal_category: "bio" }),
       /Fable 5\.1 declined this request \(bio\); Opus 5 answered/,
@@ -1092,7 +1106,7 @@ async function main() {
     const body = await res.text();
     assert.match(body, /declined this request/);
     assert.match(body, /answer from opus/);
-    assert.deepEqual(switched, [["ses_fallback", "claude-opus-5[1m]", undefined]]);
+    assert.deepEqual(switched, [["ses_fallback", "claude-opus-5", undefined]]);
     // Chat turns keep the user's Claude Code memory; only utility turns drop it.
     assert.equal(chatEnv?.CLAUDE_CODE_DISABLE_AUTO_MEMORY, undefined);
     setModelFallbackHandler(null);

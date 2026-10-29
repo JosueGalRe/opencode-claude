@@ -57,8 +57,8 @@ function model(
  * (`opus[1m]`, `sonnet`) asks the user to pick a model once.
  */
 const FALLBACK_MODELS: ClaudeModel[] = [
-  model("claude-opus-5-5[1m]", "Opus 5.5", LIMIT_1M),
-  model("claude-fable-5-1[1m]", "Fable 5.1", LIMIT_1M),
+  model("claude-opus-5-5", "Opus 5.5", LIMIT_1M),
+  model("claude-fable-5-1", "Fable 5.1", LIMIT_1M),
   model("claude-sonnet-5-5", "Sonnet 5.5", LIMIT_1M),
   model("claude-sonnet-5", "Sonnet 5", LIMIT_1M),
   model("claude-haiku-5-5", "Haiku 5.5", LIMIT_1M),
@@ -76,19 +76,21 @@ export type SdkModelRow = {
 };
 
 /**
- * 1M context rules per model family (same table t3code ships). Claude Code
- * selects 1M through a `[1m]` suffix on the model id.
+ * 1M context rules per model family, from the window the CLI reports for
+ * each plain id (Claude Code 2.1.312, a subscription plan). Claude Code
+ * selects 1M through a `[1m]` suffix where the plain id runs at 200K.
  * - default: offered only as the 1M variant
  * - optional: offered as both the plain model and a 1M variant
  * - fixed: the plain id already runs at 1M
+ * Anything else is 200K. Sonnet 4.6's 1M needs usage credits, so it isn't
+ * offered.
  */
 const ONE_M_FAMILIES: Array<{ match: RegExp; mode: "default" | "optional" | "fixed" }> = [
-  { match: /^claude-fable-5/, mode: "default" },
-  { match: /^claude-opus-5/, mode: "default" },
-  { match: /^claude-opus-4-6/, mode: "default" },
+  { match: /^claude-fable-5/, mode: "fixed" },
+  { match: /^claude-opus-5/, mode: "fixed" },
   { match: /^claude-opus-4-[78]/, mode: "fixed" },
+  { match: /^claude-opus-4-6/, mode: "optional" },
   { match: /^claude-sonnet-5/, mode: "fixed" },
-  { match: /^claude-sonnet-4-6/, mode: "optional" },
   { match: /^claude-haiku-5/, mode: "fixed" },
 ];
 
