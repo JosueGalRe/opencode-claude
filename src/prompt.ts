@@ -289,12 +289,15 @@ function convertPart(part: unknown, blocks: AnthropicContentBlock[]): void {
     // Older / alternate shapes use `url` or raw base64 `data`.
     const fileData =
       typeof file.file_data === "string" ? file.file_data : null;
+    // OpenCode 2.x tool output parts carry the source as `uri`.
     const url =
       typeof file.url === "string"
         ? file.url
-        : fileData && /^data:/i.test(fileData)
-          ? fileData
-          : null;
+        : typeof file.uri === "string"
+          ? file.uri
+          : fileData && /^data:/i.test(fileData)
+            ? fileData
+            : null;
     const data =
       typeof file.data === "string"
         ? file.data
@@ -320,7 +323,11 @@ function convertPart(part: unknown, blocks: AnthropicContentBlock[]): void {
 
     if (url) {
       if (pushDataUrl(blocks, url)) return;
-      if (isHttpUrl(url)) pushRemoteUrl(blocks, url, mediaType || name);
+      if (isHttpUrl(url)) {
+        pushRemoteUrl(blocks, url, mediaType || name);
+        return;
+      }
+      pushText(blocks, `[Attachment ${name || url} could not be relayed inline]`);
       return;
     }
     if (data) {
@@ -526,6 +533,52 @@ export function openaiToolResultToMcpContent(
     });
   }
   return result;
+}
+
+const TOOL_PART_TYPES = new Set([
+  "text",
+  "file",
+  "image",
+  "image_url",
+  "input_file",
+  "input_image",
+  "document",
+]);
+
+/**
+ * OpenCode 2.x returns tool output as content parts, and the openai-compatible
+ * request carries a tool message's content as a string, so the parts arrive
+ * JSON-encoded: `[{"type":"text",...},{"type":"file","uri":"data:image/png;base64,...",
+ * "mime":"image/png"}]`. Relayed as text, an image becomes kilobytes of base64
+ * the model cannot see. Decode exactly that shape; any other string stays
+ * the string it was.
+ */
+export function decodeToolMessageContent(content: unknown): unknown {
+  // With a cache breakpoint OpenCode wraps that string in one text part.
+  if (Array.isArray(content) && content.length === 1) {
+    const only = content[0] as { type?: unknown; text?: unknown } | null;
+    if (only?.type === "text" && typeof only.text === "string") {
+      const decoded = decodeToolMessageContent(only.text);
+      return decoded === only.text ? content : decoded;
+    }
+  }
+  if (typeof content !== "string") return content;
+  const text = content.trim();
+  if (!text.startsWith("[") || !text.endsWith("]")) return content;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return content;
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return content;
+  const isPart = (part: unknown): boolean => {
+    if (!part || typeof part !== "object") return false;
+    const p = part as Record<string, unknown>;
+    if (typeof p.type !== "string" || !TOOL_PART_TYPES.has(p.type)) return false;
+    return p.type !== "text" || typeof p.text === "string";
+  };
+  return parsed.every(isPart) ? parsed : content;
 }
 
 const UNRELAYABLE_USER_MESSAGE =
@@ -790,7 +843,7 @@ function toolStepBlocks(
   for (const [index, msg] of stepMessages.entries()) {
     if (msg?.role === "tool" && msg.tool_call_id) {
       const call = calls.get(msg.tool_call_id);
-      const result = openaiContentToAnthropicBlocks(msg.content);
+      const result = openaiContentToAnthropicBlocks(decodeToolMessageContent(msg.content));
       blocks.push(
         {
           type: "text",
@@ -933,7 +986,7 @@ function serializeHistoryMessage(
   }
 
   if (role === "tool") {
-    const text = extractTextContent(msg.content).trim();
+    const text = extractTextContent(decodeToolMessageContent(msg.content)).trim();
     if (!text) return null;
     // OpenAI-style tool messages carry only tool_call_id; the name is on the
     // assistant's call.

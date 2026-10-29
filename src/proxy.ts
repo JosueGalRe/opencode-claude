@@ -92,6 +92,7 @@ import {
   extractTextContent,
   isSyntheticToolMediaMessage,
   latestUserPrompt,
+  decodeToolMessageContent,
   openaiToolResultToMcpContent,
   priorMessagesOf,
   historyAfterUserCount,
@@ -519,7 +520,10 @@ function collectToolResults(
   const results = new Map<string, McpToolResultContent[]>();
   for (const msg of messages) {
     if (msg.role !== "tool" || !msg.tool_call_id) continue;
-    results.set(msg.tool_call_id, openaiToolResultToMcpContent(msg.content));
+    results.set(
+      msg.tool_call_id,
+      openaiToolResultToMcpContent(decodeToolMessageContent(msg.content)),
+    );
   }
   return results;
 }
