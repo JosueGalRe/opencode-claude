@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6.1 - 2026-10-30
+
+- **Cache warming no longer eats your limits**: with OpenCode's `warming`
+  setting on, every ping re-read the whole chat from your plan, every few
+  minutes, without warming anything the chat uses. The plugin now answers
+  those pings itself.
+- **Images from tools reach Claude**: on OpenCode 2.x a screenshot read by a
+  tool arrived as base64 text Claude couldn't see. It now arrives as an
+  image, and other tool results lose the JSON wrapping. Thanks to
+  @mradwankhalil.
+- **Fix: switching back to Claude forgot the other model's work**: when the
+  other model's last step was a tool call, Claude got none of its turns. It
+  now gets them all. Thanks to @Vikt0r70.
+- **Fix: Code Mode tools on OpenCode 2.2.1**: the renamed tools heading
+  kept Claude from seeing which tools work inside `execute`. Thanks to
+  @JosueGalRe.
+
 ## 1.6.0 - 2026-10-26
 
 - **A Claude account per project**: map project folders to another Claude
