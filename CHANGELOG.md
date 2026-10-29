@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **OpenCode 2.2.1's Code Mode catalog is recognized again**: 2.2.1 heads
+  the tool listing `## Code Mode tools (call only inside \`execute\`)`
+  instead of `## Available tools`. The plugin no longer found the catalog,
+  so it stayed in the forwarded OpenCode context: without the note that
+  `execute` is `mcp__opencode__execute`, and even on turns where `execute`
+  isn't bridged. Both headings are accepted.
 - **Turns report the plugin's own name, not `sdk-ts`**: left unset,
   Claude Code's entrypoint is `sdk-ts`, and several controlled A/B tests in
   anthropics/claude-code#97074 measure `sdk-*` turns using the 5-hour window

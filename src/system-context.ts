@@ -27,15 +27,16 @@ const V2_DATE_LINE = /^Today's date(?: is now)?:[^\n]*$/gm;
 
 /**
  * V2's Code Mode catalog: its heading through the tool listing under
- * "## Available tools". OpenCode renders the listing as one block (tool
- * signatures may span lines), so a blank line or a heading ends it; what
- * follows (date, environment, skills) need not have a heading.
+ * "## Available tools" ("## Code Mode tools (call only inside `execute`)"
+ * from 2.2.1). OpenCode renders the listing as one block (tool signatures
+ * may span lines), so a blank line or a heading ends it; what follows (date,
+ * environment, skills) need not have a heading.
  */
 function v2CodeMode(v2Body: string): string {
   const heading = /^# Code Mode[\t ]*\r?$/m.exec(v2Body);
   if (!heading) return "";
   const rest = v2Body.slice(heading.index);
-  const tools = /^## Available tools[\t ]*\r?$/m.exec(rest);
+  const tools = /^## (?:Available tools|Code Mode tools\b[^\r\n]*)[\t ]*\r?$/m.exec(rest);
   if (!tools) return "";
   const afterTools = tools.index + tools[0].length;
   const listAt = afterTools + (/^(?:[\t ]*\r?\n)+/.exec(rest.slice(afterTools))?.[0].length ?? 0);

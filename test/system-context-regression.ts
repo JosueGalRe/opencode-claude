@@ -179,14 +179,16 @@ async function main() {
     "  - tools.demo.read({", "  path: string,", "}): Promise<string> // Read a file",
     "  - tools.demo.status(): Promise<string>",
   ].join("\n");
-  const catalogOf = (after: string, sep = "\n\n") => {
+  const catalogOf = (after: string, sep = "\n\n", source = catalog, tools = ["execute"]) => {
     const prompt = turnSystemPrompt(null, [
       { role: "system", content: "You are an AI agent running in OpenCode." },
       { role: "system", content: "# Your Model\n- Name: X" },
-      { role: "system", content: `${catalog.replaceAll("\n", sep === "\r\n \t\r\n" ? "\r\n" : "\n")}${sep}${after}` },
-    ], ["execute"]);
+      { role: "system", content: `${source.replaceAll("\n", sep === "\r\n \t\r\n" ? "\r\n" : "\n")}${sep}${after}` },
+    ], tools);
     assert.ok(typeof prompt !== "string");
-    return prompt.append?.match(/# Code Mode[\s\S]*?(?=\n\nThe `execute` tool above)/)?.[0];
+    return tools.includes("execute")
+      ? prompt.append?.match(/# Code Mode[\s\S]*?(?=\n\nThe `execute` tool above)/)?.[0]
+      : prompt.append ?? "";
   };
   const envAfter = "Today's date: Thu Oct 01 2026\n\nHere is some useful information about the environment you are running in:\n<env>\n</env>";
   for (const after of [envAfter, "<mcp_instructions>m</mcp_instructions>\n\n" + envAfter, "Some plugin note\n\n" + envAfter]) {
@@ -195,6 +197,23 @@ async function main() {
   assert.equal(catalogOf(`# Other instructions\nExample\n\n${envAfter}`, "\n"), catalog);
   assert.equal(catalogOf(`## Other instructions\nExample\n\n${envAfter}`, "\n"), catalog);
   assert.equal(catalogOf(envAfter, "\r\n \t\r\n"), catalog.replaceAll("\n", "\r\n"));
+
+  // OpenCode 2.2.1 heads the listing "## Code Mode tools (call only inside
+  // `execute`)". Unrecognized, the catalog stayed in the forwarded context:
+  // without the `execute` note, and even when `execute` is not bridged.
+  const catalog221 = [
+    "# Code Mode", "",
+    "The tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.", "",
+    "The catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names.", "",
+    "- search(query: string)", "",
+    "## Code Mode tools (call only inside `execute`)", "", "- demo (2 tools) // Example tools",
+    "  - tools.demo.read({", "  path: string,", "}): Promise<string> // Read a file",
+    "  - tools.demo.status(): Promise<string>",
+  ].join("\n");
+  for (const after of [envAfter, "Some plugin note\n\n" + envAfter]) {
+    assert.equal(catalogOf(after, "\n\n", catalog221), catalog221);
+  }
+  assert.doesNotMatch(String(catalogOf("Some plugin note\n\n" + envAfter, "\n\n", catalog221, ["read"])), /Code Mode|tools\.demo/);
 
   // Instruction files Claude Code loads itself for the turn's directory are
   // left to it; the rest of OpenCode's instructions still go.
