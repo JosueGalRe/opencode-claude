@@ -1293,8 +1293,10 @@ async function startNewTurn(input: {
       getSessionTurns(conversationKey),
       userHistoryFingerprints(priorMessages),
     );
-    // A rebuilt tool step continues Claude's own turn, which it saw.
-    if (match.kind === "latest" && answeredStep === null) {
+    // Also for a rebuilt tool step: it is Claude's own only when no turn the
+    // session never saw comes before it. After a model switch it can be the
+    // other model's step, and the turns before it are the handover.
+    if (match.kind === "latest") {
       missedMessages = historyAfterUserCount(priorMessages, match.count);
     }
     // A boundary may sit in an earlier session of this chat (before a
@@ -1424,7 +1426,11 @@ async function startNewTurn(input: {
       },
     );
   }
-  const contextualPrompt = withConversationContext(prompt, transcript, Boolean(resume));
+  const turnPrompt =
+    answeredStep !== null && missedMessages.length > 0
+      ? answeredToolStepPrompt(messages, answeredStep, { otherModel: true })
+      : prompt;
+  const contextualPrompt = withConversationContext(turnPrompt, transcript, Boolean(resume));
 
   const mcpServers =
     (!isMetaRequest || summaryResume) && openCodeTools.length > 0

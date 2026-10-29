@@ -280,6 +280,9 @@ async function main() {
     assert.deepEqual(r, { resume: session, fork: undefined, transferred: false });
 
     // Tool results with no parked turn (reaped): rebuilt, still resumed.
+    // The turn that made the call started here, so the session saw its
+    // prompt; nothing was missed.
+    await turn("L9-start", [...toolStep, assistant("2 files"), user("thanks"), assistant("welcome"), user("run it")]);
     const orphanCall = { id: "call_orphan", type: "function", function: { name: "bash", arguments: "{}" } };
     const rebuiltHistory = [
       ...toolStep,

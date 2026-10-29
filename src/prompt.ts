@@ -794,12 +794,15 @@ export function answeredToolStepIndex(messages: ToolStepMessage[]): number | nul
 export function answeredToolStepPrompt(
   messages: ToolStepMessage[],
   assistantIndex: number,
+  options: { otherModel?: boolean } = {},
 ): SdkUserPrompt {
   const { blocks, userBlocks } = toolStepBlocks(messages, assistantIndex);
   const content: AnthropicContentBlock[] = [
     {
       type: "text",
-      text: "<tool_results>\nYour previous step called the tools below, but the session that made those calls ended before OpenCode returned their results. They are relayed here. Do not repeat a call unless its result requires it.",
+      text: options.otherModel
+        ? "<tool_results>\nThe model that handled the turns above called the tools below as its last step. Their results are relayed here. Do not repeat a call unless its result requires it."
+        : "<tool_results>\nYour previous step called the tools below, but the session that made those calls ended before OpenCode returned their results. They are relayed here. Do not repeat a call unless its result requires it.",
     },
     ...blocks,
     {
@@ -807,7 +810,9 @@ export function answeredToolStepPrompt(
       text:
         userBlocks.length > 0
           ? "</tool_results>\n\nThe user sent the following after those calls. Respond to it with the results in mind:"
-          : `</tool_results>\n\n${HOST_STOP_NOTE} Continue the task from these results.`,
+          : options.otherModel
+            ? "</tool_results>\n\nContinue the task from these results."
+            : `</tool_results>\n\n${HOST_STOP_NOTE} Continue the task from these results.`,
     },
     ...userBlocks,
   ];
