@@ -101,6 +101,7 @@ import {
 import {
   buildConversationTranscript,
   extractTextContent,
+  decodeToolMessageContent,
   isPromotedToolMedia,
   latestUserPrompt,
   openaiContentToAnthropicBlocks,
@@ -684,7 +685,7 @@ function collectAnsweredToolStep(
   const step = messages.slice(assistantIndex + 1);
   for (const [i, msg] of step.entries()) {
     if (msg.role === "tool" && msg.tool_call_id) {
-      results.set(msg.tool_call_id, openaiToolResultToMcpContent(msg.content));
+      results.set(msg.tool_call_id, openaiToolResultToMcpContent(decodeToolMessageContent(msg.content)));
     } else if (isPromotedToolMedia(msg, step[i - 1])) {
       media.push(
         ...openaiToolResultToMcpContent(msg.content).filter(
@@ -795,7 +796,7 @@ function toolStepBlocks(
   for (const [i, msg] of stepMessages.entries()) {
     if (msg.role === "tool" && msg.tool_call_id) {
       const call = calls.get(msg.tool_call_id);
-      const blocks = openaiContentToAnthropicBlocks(msg.content);
+      const blocks = openaiContentToAnthropicBlocks(decodeToolMessageContent(msg.content));
       content.push(
         {
           type: "text",

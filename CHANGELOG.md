@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Tool results sent as JSON-encoded parts reach Claude as images and
+  text** (ported from upstream 1.6.1): OpenCode 2.x can carry a tool's
+  output parts JSON-encoded in the message string, and relayed as text an
+  image became base64 Claude couldn't see. That exact shape is decoded for
+  parked results, rebuilt tool steps and transferred history; file parts
+  with a `uri` are read too.
 - **Switching back to Claude after another model's tool step keeps its
   work** (ported from upstream 1.6.1): when the other model's last step was
   an answered tool call, the plugin took that step for Claude's own. Claude
