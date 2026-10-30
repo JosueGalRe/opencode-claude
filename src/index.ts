@@ -69,7 +69,24 @@ type IntegrationEditor = Parameters<
 >[0];
 type AuthRegistration = Parameters<IntegrationEditor["method"]["update"]>[0];
 
-export function buildProviderModel(model: ClaudeModel, id: string): ModelInfo {
+/** OpenCode keeps this share of the window free before it compacts. */
+const COMPACTION_RESERVE_SHARE = 0.15;
+
+/**
+ * The `compactAt` option: compact a chat at about this many tokens instead
+ * of near a 1M window. OpenCode compacts when the prompt reaches its input
+ * limit minus a reserve, so the input limit is set to put that point here.
+ * The context window stays the model's own; only smaller models are left
+ * alone.
+ */
+export function compactionInputLimit(model: ClaudeModel, compactAt: unknown): number | undefined {
+  if (typeof compactAt !== "number" || !Number.isFinite(compactAt) || compactAt <= 0) return undefined;
+  const input = Math.round(compactAt / (1 - COMPACTION_RESERVE_SHARE));
+  return input < model.contextWindow ? input : undefined;
+}
+
+export function buildProviderModel(model: ClaudeModel, id: string, compactAt?: unknown): ModelInfo {
+  const input = compactionInputLimit(model, compactAt);
   return {
     id,
     modelID: id,
@@ -93,12 +110,13 @@ export function buildProviderModel(model: ClaudeModel, id: string): ModelInfo {
       // its own (compaction.buffer overrides it). A 900k input on top of
       // that compacted 1M chats at 81%, not the intended 90%.
       output: model.maxTokens,
+      ...(input ? { input } : {}),
     },
   } as unknown as ModelInfo;
 }
 
-export function buildClaudeProviderModels(models: ClaudeModel[]): ModelInfo[] {
-  return models.map((model) => buildProviderModel(model, model.id));
+export function buildClaudeProviderModels(models: ClaudeModel[], compactAt?: unknown): ModelInfo[] {
+  return models.map((model) => buildProviderModel(model, model.id, compactAt));
 }
 
 export function buildProviderInfo(baseURL: string): ProviderInfo {
@@ -222,7 +240,10 @@ export const ClaudeCodePlugin: Plugin.Plugin = {
     await ctx.provider.transform((providers) => {
       providers.add({
         info: buildProviderInfo(currentProxyBaseUrl()),
-        models: buildClaudeProviderModels(getClaudeModels()),
+        models: buildClaudeProviderModels(
+          getClaudeModels(),
+          (ctx.options as { compactAt?: unknown } | undefined)?.compactAt,
+        ),
       });
     });
 

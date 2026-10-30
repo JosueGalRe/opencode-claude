@@ -1018,10 +1018,22 @@ async function main() {
     assert.equal(info.settings.baseURL, "http://127.0.0.1:1/v1");
     const listed: any[] = buildClaudeProviderModels(getClaudeModels());
     const sonnetModel = listed.find((m) => m.id === "claude-sonnet-5");
-    // No input limit on 1M models: OpenCode keeps its own 10% free.
+    // No input limit on 1M models: OpenCode keeps its own 15% free.
     const oneM = listed.find((m) => m.limit.context === 1_000_000);
     assert.equal(oneM?.limit.input, undefined);
     assert.equal(sonnetModel.limit.input, undefined);
+    // compactAt: OpenCode compacts at input minus its 15% reserve, so the
+    // input limit puts that point at the option; the window stays 1M and
+    // smaller models are left alone.
+    const early: any[] = buildClaudeProviderModels(getClaudeModels(), 400_000);
+    const earlySonnet = early.find((m) => m.id === "claude-sonnet-5");
+    assert.equal(earlySonnet.limit.context, 1_000_000);
+    assert.equal(earlySonnet.limit.input, 470_588);
+    assert.equal(Math.round(earlySonnet.limit.input * 0.85), 400_000);
+    assert.equal(early.find((m) => m.limit.context === 200_000)?.limit.input, undefined);
+    for (const bad of [undefined, "400000", 0, -1, Number.NaN]) {
+      assert.equal(buildClaudeProviderModels(getClaudeModels(), bad).find((m: any) => m.id === "claude-sonnet-5")!.limit.input, undefined);
+    }
     assert.deepEqual(
       sonnetModel.variants.map((v: any) => v.id),
       buildEffortVariants(getClaudeModels().find((m) => m.id === "claude-sonnet-5")!),
