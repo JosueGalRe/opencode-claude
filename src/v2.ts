@@ -83,7 +83,24 @@ async function authorizeWithClaudeCli() {
   };
 }
 
-function toModelInfo(definition: ClaudeModel): Model.Info {
+/** OpenCode keeps this share of the window free before it compacts. */
+const COMPACTION_RESERVE_SHARE = 0.15;
+
+/**
+ * The `compactAt` plugin option: compact a chat at about this many tokens
+ * instead of near a 1M window. OpenCode compacts when the prompt reaches its
+ * input limit minus a reserve, so the input limit is set to put that point
+ * here. The context window stays the model's own; smaller models are left
+ * alone.
+ */
+export function compactionInputLimit(model: ClaudeModel, compactAt: unknown): number | undefined {
+  if (typeof compactAt !== "number" || !Number.isFinite(compactAt) || compactAt <= 0) return undefined;
+  const input = Math.round(compactAt / (1 - COMPACTION_RESERVE_SHARE));
+  return input < model.contextWindow ? input : undefined;
+}
+
+export function toModelInfo(definition: ClaudeModel, compactAt?: unknown): Model.Info {
+  const input = compactionInputLimit(definition, compactAt);
   return {
     id: Model.ID.make(definition.id),
     modelID: Model.ID.make(definition.id),
@@ -101,11 +118,13 @@ function toModelInfo(definition: ClaudeModel): Model.Info {
     cost: [],
     status: "active",
     enabled: true,
-    // No input limit: V2 compacts at (input || context) minus 10% on its own
-    // (2.0.19+), so a 900k input compacted 1M chats at 81%, not 90%.
+    // No input limit by default: V2 compacts at (input || context) minus its
+    // own reserve, so a 900k input compacted 1M chats at 81%, not 90%.
+    // `compactAt` sets one on purpose.
     limit: {
       context: definition.contextWindow,
       output: definition.maxTokens,
+      ...(input ? { input } : {}),
     },
   };
 }
@@ -130,7 +149,9 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
             baseURL: getClaudeProxyBaseUrl(),
           },
         },
-        models: getClaudeModels().map(toModelInfo),
+        models: getClaudeModels().map((model) =>
+          toModelInfo(model, (ctx.options as { compactAt?: unknown } | undefined)?.compactAt),
+        ),
       });
     });
     void refreshClaudeModels(listClaudeSupportedModels)

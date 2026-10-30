@@ -103,6 +103,12 @@ Ids are concrete Claude Code model ids; names are derived from the id. Most curr
 
 The aliases (`sonnet`, `opus`, `fable`, `haiku`) and the earlier `[1m]` ids of Opus 5.x and Fable 5.x (`claude-opus-5-5[1m]`, `claude-fable-5-1[1m]`) are no longer listed. If your config or a saved session points at one, pick the model again.
 
+**Compacting earlier (OpenCode V2).** On 1M models OpenCode compacts a chat near 850K tokens, and every step of a long chat re-reads all of it. To compact sooner, set `compactAt` in the plugin options; the plugin reports an input limit that puts OpenCode's compaction point there, and Claude still has its full window for a turn that runs over:
+
+```json
+{ "plugins": [{ "package": "file:///path/to/opencode-claude", "options": { "compactAt": 400000 } }] }
+```
+
 Models your CLI runs in [fast mode](https://code.claude.com/docs/en/fast-mode) get a second entry, like "Opus 5.5 Fast" (`claude-opus-5-5:fast`). It runs chat turns on the same model with fast mode on; titles and summaries stay at normal speed. Fast turns draw your plan limits faster. If your account can't use fast mode, the turn runs at normal speed and the log says why.
 
 The effort variants `low` · `medium` · `high` · `xhigh` · `max` map to Claude Code's `--effort` with adaptive thinking. Each model offers only the levels the CLI reports for it. Title requests, and summaries read from the history as text, run without effort or thinking; a summary that reads the chat's Claude session keeps the chat's.

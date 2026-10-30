@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **`compactAt` option to compact 1M chats earlier** (ported from upstream
+  1.6.1, OpenCode V2): OpenCode compacts a 1M chat near 850K tokens, and
+  every step of a long chat re-reads all of it. With `compactAt` in the
+  plugin options, the plugin reports an input limit that puts OpenCode's
+  compaction point at about that size. The context window stays 1M, and
+  smaller models are left alone.
 - **Opus 5.x and Fable 5.x are listed under their plain ids** (ported from
   upstream 1.6.1): they were offered only as `[1m]` variants, but the CLI's
   model registry marks them native 1M and lists them without the suffix. The

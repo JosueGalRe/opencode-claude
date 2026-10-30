@@ -56,6 +56,8 @@ async function main() {
 
   const ctx = {
     location: { directory: "/work/project" },
+    // `{ "package": …, "options": { "compactAt": 400000 } }` in opencode.json.
+    options: { compactAt: 400_000 },
     event: {
       subscribe({ signal }: { signal: AbortSignal }) {
         subscriptions.push(signal);
@@ -152,9 +154,20 @@ async function main() {
     const sonnet = models.find((m) => m.id === "claude-sonnet-5-5");
     assert.ok(sonnet);
     assert.equal(sonnet.limit.context, 1_000_000);
-    // V2 keeps 10% free itself; an input limit on top compacted at 81%.
-    assert.equal("input" in sonnet.limit, false);
+    // compactAt: OpenCode compacts at the input limit minus its 15% reserve,
+    // so the limit puts that point at the option; the window stays 1M.
+    assert.equal(sonnet.limit.input, 470_588);
+    assert.equal(Math.round(sonnet.limit.input * 0.85), 400_000);
+    assert.equal(models.find((m) => m.limit.context === 200_000)?.limit.input, undefined, "smaller models are left alone");
     assert.equal(sonnet.limit.output, 128_000);
+    // Without the option no input limit: V2 keeps its own reserve, and an
+    // input limit on top compacted 1M chats at 81%.
+    const { compactionInputLimit, toModelInfo } = await import("../src/v2.ts");
+    const oneM = getClaudeModels().find((m) => m.id === "claude-sonnet-5-5")!;
+    assert.equal("input" in toModelInfo(oneM).limit, false);
+    for (const bad of [undefined, "400000", 0, -1, Number.NaN, 2_000_000]) {
+      assert.equal(compactionInputLimit(oneM, bad), undefined, String(bad));
+    }
     assert.deepEqual(
       sonnet.capabilities.input,
       ["text", "image", "pdf"],
