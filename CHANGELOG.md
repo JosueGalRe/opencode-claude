@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Long tool results reach Claude whole**: past 25000 tokens Claude Code
+  saved an MCP tool result to a file and handed Claude only its path, which
+  it can't read with the built-in tools off (seen twice with ~51k-character
+  OpenCode results). Claude Code now runs with
+  `MAX_MCP_OUTPUT_TOKENS=200000` unless you set it, so OpenCode's own
+  truncation applies, as OpenCode's built-in Claude Agent provider does.
 - **`compactAt` option to compact 1M chats earlier** (ported from upstream
   1.6.1, OpenCode V2): OpenCode compacts a 1M chat near 850K tokens, and
   every step of a long chat re-reads all of it. With `compactAt` in the

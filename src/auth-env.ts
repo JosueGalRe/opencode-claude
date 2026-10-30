@@ -20,6 +20,14 @@ export const AUTH_OVERRIDE_ENV_KEYS = Object.freeze([
 export const MCP_DESCRIPTION_LIMIT = 8192;
 
 /**
+ * Tokens of one MCP tool result Claude Code passes to the model. Past its
+ * default (25000) it saves the result to a file and hands Claude a path it
+ * cannot read: the built-in tools are off. OpenCode truncates its own tool
+ * output already, so its result goes through whole. A value the user set wins.
+ */
+export const MCP_OUTPUT_LIMIT = 200_000;
+
+/**
  * Name Claude Code reports for this plugin (CLAUDE_CODE_ENTRYPOINT, sent as
  * cc_entrypoint on every request). Left unset, the Agent SDK says sdk-ts,
  * and sdk-* turns use the 5-hour window about twice as fast per token as
@@ -44,6 +52,9 @@ export function buildClaudeCodeChildEnv(
   }
   if (!env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH?.trim()) {
     env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(MCP_DESCRIPTION_LIMIT);
+  }
+  if (!env.MAX_MCP_OUTPUT_TOKENS?.trim()) {
+    env.MAX_MCP_OUTPUT_TOKENS = String(MCP_OUTPUT_LIMIT);
   }
   env.CLAUDE_CODE_ENTRYPOINT = env.OPENCODE_CLAUDE_ENTRYPOINT?.trim() || CLAUDE_ENTRYPOINT;
   return env;
