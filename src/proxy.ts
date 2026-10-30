@@ -510,6 +510,36 @@ export async function stopProxy(): Promise<void> {
   stopListener();
 }
 
+/** OpenCode's default keep-alive prompt (core/src/plugin/warming.ts). */
+const WARMING_PROMPT =
+  "This is a keep-alive request. Do not perform any work or use tools. Reply with exactly: OK";
+
+function isWarmingRequest(messages: OpenAIMessage[]): boolean {
+  const last = messages.at(-1);
+  return last?.role === "user" && extractTextContent(last.content).trim() === WARMING_PROMPT;
+}
+
+/** A finished reply that never reached Claude, with no usage. */
+function localTextResponse(text: string, model: string, stream: boolean): Response {
+  const id = `chatcmpl_${randomUUID().replace(/-/g, "").slice(0, 24)}`;
+  const created = Math.floor(Date.now() / 1000);
+  const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  if (!stream) {
+    return Response.json({
+      id,
+      object: "chat.completion",
+      created,
+      model,
+      choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
+      usage,
+    });
+  }
+  const chunk = (delta: Record<string, unknown>, finish: string | null, extra?: Record<string, unknown>) =>
+    `data: ${JSON.stringify({ id, object: "chat.completion.chunk", created, model, choices: [{ index: 0, delta, finish_reason: finish }], ...extra })}\n\n`;
+  const body = chunk({ role: "assistant", content: text }, null) + chunk({}, "stop", { usage }) + "data: [DONE]\n\n";
+  return new Response(body, { headers: SSE_HEADERS });
+}
+
 function errorResponse(status: number, type: string, message: string): Response {
   return Response.json({ error: { message, type } }, { status });
 }
@@ -1265,6 +1295,14 @@ async function handleChatCompletions(
   const baseConversationKey =
     sessionHeader || (standalone ? `req_${randomUUID()}` : conversationKeyFromMessages(messages));
   const conversationKey = requestKeyNamespace(metaKind) + baseConversationKey;
+  // OpenCode's cache warming pings an idle chat every few minutes. Through
+  // Claude Code it can't warm anything: it runs as a separate request whose
+  // prompt the chat's own turns never share, and each ping re-reads the whole
+  // history from the plan's limits. Answer it here instead.
+  if (metaKind === "generate" && isWarmingRequest(messages)) {
+    log.info("[opencode-claude] answered a cache warming ping without Claude", { conversationKey });
+    return localTextResponse("OK", body.model || "claude-code", body.stream !== false);
+  }
   const releaseSpawnLock = await acquireSpawnLock(metaKind === "summary" ? baseConversationKey : conversationKey);
   try {
   let summaryResume: SummaryResumePoint | null = null;

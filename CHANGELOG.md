@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Cache warming no longer runs Claude turns** (ported from upstream
+  1.6.1): with OpenCode's `"warming": true`, an idle chat gets a generate
+  ping every 4 minutes for 30 minutes after each turn. Through the plugin
+  each ping was a fresh Claude turn with the whole history copied in, and it
+  warmed nothing the chat's own turns reuse. The plugin now answers
+  OpenCode's keep-alive prompt with `OK` itself; other generate requests
+  still run.
 - **OpenCode 2.2.1's Code Mode catalog is recognized again**: 2.2.1 heads
   the tool listing `## Code Mode tools (call only inside \`execute\`)`
   instead of `## Available tools`. The plugin no longer found the catalog,
