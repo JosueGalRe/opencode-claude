@@ -386,15 +386,15 @@ async function main() {
   const models = getClaudeModels();
   assert.ok(models.length >= 4);
   assert.ok(models.some((m) => m.id === "claude-sonnet-5"));
-  assert.ok(models.some((m) => m.id === "claude-opus-5-5[1m]"));
+  assert.ok(models.some((m) => m.id === "claude-opus-5-5"));
   assert.equal(resolveClaudeModelId("claude-haiku-4-5"), "claude-haiku-4-5");
   assert.equal(resolveClaudeModelId("claude-sonnet-5[1m]"), "claude-sonnet-5[1m]");
 
   // 1M models declare an input window so OpenCode's auto-compaction trigger
   // (limit.input minus reserved) fires predictably; 200K models stay untouched.
   const catalogModel = (id: string) => models.find((m) => m.id === id)!;
-  assert.equal(catalogModel("claude-fable-5-1[1m]").inputWindow, 900_000);
-  assert.equal(catalogModel("claude-opus-5-5[1m]").inputWindow, 900_000);
+  assert.equal(catalogModel("claude-fable-5-1").inputWindow, 900_000);
+  assert.equal(catalogModel("claude-opus-5-5").inputWindow, 900_000);
   assert.equal(catalogModel("claude-sonnet-5").inputWindow, 900_000, "Sonnet 5 runs at 1M natively");
   assert.equal(catalogModel("claude-haiku-4-5").inputWindow, undefined);
 

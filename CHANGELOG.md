@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Opus 5.x and Fable 5.x are listed under their plain ids** (ported from
+  upstream 1.6.1): they were offered only as `[1m]` variants, but the CLI's
+  model registry marks them native 1M and lists them without the suffix. The
+  ids are now `claude-opus-5-5`, `claude-fable-5-1` and so on (Fast entries
+  `claude-opus-5-5:fast`), still at 1M. Configs, agents and saved sessions on
+  `claude-opus-5-5[1m]` or `claude-fable-5-1[1m]` must pick the model again.
 - **Tool results sent as JSON-encoded parts reach Claude as images and
   text** (ported from upstream 1.6.1): OpenCode 2.x can carry a tool's
   output parts JSON-encoded in the message string, and relayed as text an

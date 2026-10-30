@@ -20,8 +20,8 @@ async function main() {
       { value: "sonnet", resolvedModel: "claude-sonnet-5-5" },
     ]);
     assert.deepEqual(models.map((m) => [m.id, m.name]), [
-      ["claude-opus-5-5[1m]", "Opus 5.5"],
-      ["claude-opus-5-5[1m]:fast", "Opus 5.5 Fast"],
+      ["claude-opus-5-5", "Opus 5.5"],
+      ["claude-opus-5-5:fast", "Opus 5.5 Fast"],
       ["claude-opus-4-8", "Opus 4.8"],
       ["claude-opus-4-8:fast", "Opus 4.8 Fast"],
       ["claude-sonnet-5-5", "Sonnet 5.5"],
@@ -42,8 +42,8 @@ async function main() {
     assert.equal(cached.exitCode, 0, cached.stderr.toString());
     assert.deepEqual(JSON.parse(cached.stdout.toString()), getClaudeModels());
 
-    assert.equal(resolveClaudeModelId("claude-opus-5-5[1m]:fast"), "claude-opus-5-5[1m]");
-    assert.equal(resolveClaudeModelId("claude-opus-5-5[1m]"), "claude-opus-5-5[1m]");
+    assert.equal(resolveClaudeModelId("claude-opus-5-5:fast"), "claude-opus-5-5");
+    assert.equal(resolveClaudeModelId("claude-opus-5-5"), "claude-opus-5-5");
 
     const seen: Array<{ model?: string; fastMode?: boolean }> = [];
     h.proxy.setClaudeQueryStarter(async (params: StartClaudeQueryParams) => {
@@ -54,19 +54,19 @@ async function main() {
         yield result;
       })());
     });
-    for (const [session, model] of [["fast", "claude-opus-5-5[1m]:fast"], ["plain", "claude-opus-5-5[1m]"]] as const) {
+    for (const [session, model] of [["fast", "claude-opus-5-5:fast"], ["plain", "claude-opus-5-5"]] as const) {
       const res = await h.post(session, { model, messages: [{ role: "user", content: "hi" }] });
       assert.equal(res.status, 200);
       await res.text();
     }
     // A title runs at normal speed even when the chat's model is the fast one.
-    const title = await h.post("fast-title", { model: "claude-opus-5-5[1m]:fast", messages: [{ role: "user", content: "hi" }] }, { "x-opencode-claude-request-kind": "title" });
+    const title = await h.post("fast-title", { model: "claude-opus-5-5:fast", messages: [{ role: "user", content: "hi" }] }, { "x-opencode-claude-request-kind": "title" });
     assert.equal(title.status, 200);
     await title.text();
     assert.deepEqual(seen, [
-      { model: "claude-opus-5-5[1m]", fastMode: true },
-      { model: "claude-opus-5-5[1m]", fastMode: false },
-      { model: "claude-opus-5-5[1m]", fastMode: false },
+      { model: "claude-opus-5-5", fastMode: true },
+      { model: "claude-opus-5-5", fastMode: false },
+      { model: "claude-opus-5-5", fastMode: false },
     ]);
   } finally {
     await h.cleanup();

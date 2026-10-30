@@ -50,8 +50,8 @@ function model(
 
 /** Used before discovery or when the CLI is unavailable. No moving aliases. */
 const FALLBACK_MODELS: ClaudeModel[] = [
-  model("claude-opus-5-5[1m]", "Opus 5.5", LIMIT_1M),
-  model("claude-fable-5-1[1m]", "Fable 5.1", LIMIT_1M),
+  model("claude-opus-5-5", "Opus 5.5", LIMIT_1M),
+  model("claude-fable-5-1", "Fable 5.1", LIMIT_1M),
   model("claude-sonnet-5-5", "Sonnet 5.5", LIMIT_1M),
   model("claude-sonnet-5", "Sonnet 5", LIMIT_1M),
   model("claude-haiku-5-5", "Haiku 5.5", LIMIT_1M),
@@ -68,14 +68,16 @@ export type SdkModelRow = {
 };
 
 /** default: only 1M; optional: both; fixed: plain id already uses 1M. */
+// The CLI's registry (2.1.310) marks Opus 5/5.5, Fable 5/5.1, Opus 4.7/4.8,
+// Sonnet 5/5.5 and Haiku 5.5 native_1m (window 1e6): their plain ids run at
+// 1M, so the CLI lists them without [1m]. Opus 4.6 is 200K plain, 1M with
+// the suffix.
 const ONE_M_FAMILIES: Array<{ match: RegExp; mode: "default" | "optional" | "fixed" }> = [
-  { match: /^claude-fable-5/, mode: "default" },
-  { match: /^claude-opus-5/, mode: "default" },
+  { match: /^claude-fable-5/, mode: "fixed" },
+  { match: /^claude-opus-5/, mode: "fixed" },
   // ponytail: Opus 4.6/Sonnet 4.6 entitlement is hand-maintained from anthropics/claude-code #34773/#41121 and CC 2.1.75; revisit when Anthropic changes 1M billing.
   { match: /^claude-opus-4-6/, mode: "optional" },
   { match: /^claude-opus-4-[78]/, mode: "fixed" },
-  // The CLI's registry marks Sonnet 5/5.5 and Haiku 5.5 native_1m (window
-  // 1e6), with no [1m] row.
   { match: /^claude-sonnet-5/, mode: "fixed" },
   { match: /^claude-haiku-5/, mode: "fixed" },
 ];

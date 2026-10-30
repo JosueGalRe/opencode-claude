@@ -42,7 +42,7 @@ async function main() {
   assert.equal(modelNameFromId("claude-sonnet-5-5"), "Sonnet 5.5");
   const mapped = modelsFromSdk(rows);
   assert.deepEqual(mapped.map((model) => model.id), [
-    "claude-opus-5-5[1m]", "claude-sonnet-5-5",
+    "claude-opus-5-5", "claude-sonnet-5-5",
     "claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-6[1m]",
     "claude-opus-4-8", "claude-haiku-5-5", "claude-haiku-4-5-20251001",
   ]);
@@ -60,6 +60,7 @@ async function main() {
   assert.deepEqual(mapped[0]?.efforts, ["low", "high"]);
   assert.equal(mapped.at(-1)?.reasoning, false);
   assert.deepEqual(mapped.at(-1)?.efforts, []);
+  // An id from before the plain 1M ids still reaches the CLI as it was.
   assert.equal(resolveClaudeModelId("claude-opus-5-5[1m]"), "claude-opus-5-5[1m]");
 
   // Given a failed first probe; when ten minutes elapse; then one successful refresh writes cache.

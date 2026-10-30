@@ -93,18 +93,17 @@ opencode run "Summarise this repository in five bullets." --model claude-code/cl
 
 The model list is not hardcoded: the plugin asks the CLI (`supportedModels()`), caches the answer in `models.json` in the state directory, and refreshes it in the background at most every 10 minutes. Until the first answer arrives, or when the CLI is unavailable, a short built-in list is used.
 
-Ids are concrete Claude Code model ids; names are derived from the id. A `[1m]` suffix selects the 1M context window:
+Ids are concrete Claude Code model ids; names are derived from the id. Most current models run at 1M under their plain id; where the plain id runs at 200K, a `[1m]` suffix selects the 1M context window:
 
 | Id shape | Example | Context |
 | --- | --- | --- |
-| Only offered with 1M | `claude-opus-5-5[1m]` · `claude-fable-5-1[1m]` | 1M |
+| Plain id that already runs at 1M | `claude-opus-5-5` · `claude-fable-5-1` · `claude-opus-4-8` · `claude-sonnet-5-5` · `claude-haiku-5-5` | 1M |
 | Plain and `[1m]`, as separate choices | `claude-opus-4-6` · `claude-opus-4-6[1m]` | 200k · 1M |
-| Plain id that already runs at 1M | `claude-opus-4-8` · `claude-sonnet-5-5` · `claude-haiku-5-5` | 1M |
 | Everything else | `claude-haiku-4-5-20251001` | 200k |
 
-The aliases (`sonnet`, `opus`, `fable`, `haiku`) and the old pinned ids without the suffix (`claude-opus-5-5`, `claude-fable-5-1`) are no longer listed. If your config or a saved session points at one, pick the model again.
+The aliases (`sonnet`, `opus`, `fable`, `haiku`) and the earlier `[1m]` ids of Opus 5.x and Fable 5.x (`claude-opus-5-5[1m]`, `claude-fable-5-1[1m]`) are no longer listed. If your config or a saved session points at one, pick the model again.
 
-Models your CLI runs in [fast mode](https://code.claude.com/docs/en/fast-mode) get a second entry, like "Opus 5.5 Fast" (`claude-opus-5-5[1m]:fast`). It runs chat turns on the same model with fast mode on; titles and summaries stay at normal speed. Fast turns draw your plan limits faster. If your account can't use fast mode, the turn runs at normal speed and the log says why.
+Models your CLI runs in [fast mode](https://code.claude.com/docs/en/fast-mode) get a second entry, like "Opus 5.5 Fast" (`claude-opus-5-5:fast`). It runs chat turns on the same model with fast mode on; titles and summaries stay at normal speed. Fast turns draw your plan limits faster. If your account can't use fast mode, the turn runs at normal speed and the log says why.
 
 The effort variants `low` · `medium` · `high` · `xhigh` · `max` map to Claude Code's `--effort` with adaptive thinking. Each model offers only the levels the CLI reports for it. Title requests, and summaries read from the history as text, run without effort or thinking; a summary that reads the chat's Claude session keeps the chat's.
 
