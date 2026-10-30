@@ -19,6 +19,19 @@ export const AUTH_OVERRIDE_ENV_KEYS = Object.freeze([
 export const MCP_DESCRIPTION_LIMIT = 8192;
 
 /**
+ * Claude Code puts two caps on an MCP tool result, and past either it saves
+ * the result to a file and hands Claude only the path, which Claude cannot
+ * read with the built-in tools off. OpenCode truncates its own tool output
+ * already, so both are raised and that truncation is the one that applies:
+ * - MCP_OUTPUT_LIMIT, tokens (MAX_MCP_OUTPUT_TOKENS, default 25000; a value
+ *   the user set wins);
+ * - MCP_RESULT_SIZE_LIMIT, characters (each tool's
+ *   `_meta["anthropic/maxResultSizeChars"]`, default 50,000, CLI max 500,000).
+ */
+export const MCP_OUTPUT_LIMIT = 200_000;
+export const MCP_RESULT_SIZE_LIMIT = 500_000;
+
+/**
  * Build a child-process env for Claude Code subscription mode.
  * Starts from process.env (or provided base), preserves PATH, then deletes
  * credential overrides so the CLI exclusively owns authentication.
@@ -32,6 +45,9 @@ export function buildClaudeCodeChildEnv(
   }
   if (!env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH?.trim()) {
     env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH = String(MCP_DESCRIPTION_LIMIT);
+  }
+  if (!env.MAX_MCP_OUTPUT_TOKENS?.trim()) {
+    env.MAX_MCP_OUTPUT_TOKENS = String(MCP_OUTPUT_LIMIT);
   }
   return env;
 }

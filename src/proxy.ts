@@ -27,7 +27,7 @@ import {
   type ParkedBridge,
   type ParkedToolCall,
 } from "./bridge-pool.js";
-import { buildClaudeCodeChildEnv, MCP_DESCRIPTION_LIMIT } from "./auth-env.js";
+import { buildClaudeCodeChildEnv, MCP_DESCRIPTION_LIMIT, MCP_RESULT_SIZE_LIMIT } from "./auth-env.js";
 import {
   classifyClaudeFailure,
   failureCodeFor,
@@ -2207,7 +2207,10 @@ export async function buildOpenCodeMcpServer(
           ...(annotations ? { annotations } : {}),
           // What the SDK's own tools/list sends for alwaysLoad; without it
           // the CLI may defer the tool behind its tool search.
-          _meta: { "anthropic/alwaysLoad": true },
+          // maxResultSizeChars: without it the CLI saves any result over
+          // 50,000 characters to a file Claude can't read (no built-in
+          // tools) and passes only its path; OpenCode truncates its own.
+          _meta: { "anthropic/alwaysLoad": true, "anthropic/maxResultSizeChars": MCP_RESULT_SIZE_LIMIT },
         });
         // Lossless zod for argument parsing; loose() keeps keys the schema
         // did not name instead of silently dropping them before OpenCode.
