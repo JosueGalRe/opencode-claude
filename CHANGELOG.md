@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.7.0 - 2026-10-30
+
+- **Background compaction works with Claude**: with OpenCode's
+  `experimental.background_compaction` on, one compaction started three new
+  Claude sessions, each re-reading the whole chat. The chat now keeps going
+  while the summary is written and moves to a new session once, when the
+  summary is swapped in. Thanks to @yhoyoex.
+- **Compact earlier with `compactAt`**: on 1M models OpenCode compacts near
+  850K tokens. Set `"compactAt": 400000` in the plugin options to compact
+  long chats sooner; Claude still has its full window. See the README.
+- **Model ids cleaned up**: Opus 5.x and Fable 5.x run at 1M under their
+  plain ids, so the `[1m]` suffix is gone from the picker. Opus 4.6 keeps a
+  separate 1M entry, and Sonnet 4.6 (1M), which always failed on a plan, is
+  gone. Chats on the old ids ask you to pick the model once more.
+
 ## 1.6.1 - 2026-10-30
 
 - **Cache warming no longer eats your limits**: with OpenCode's `warming`
