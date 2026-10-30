@@ -20,12 +20,17 @@ export const AUTH_OVERRIDE_ENV_KEYS = Object.freeze([
 export const MCP_DESCRIPTION_LIMIT = 8192;
 
 /**
- * Tokens of one MCP tool result Claude Code passes to the model. Past its
- * default (25000) it saves the result to a file and hands Claude a path it
- * cannot read: the built-in tools are off. OpenCode truncates its own tool
- * output already, so its result goes through whole. A value the user set wins.
+ * Claude Code puts two caps on an MCP tool result, and past either it saves
+ * the result to a file and hands Claude only the path, which Claude cannot
+ * read with the built-in tools off. OpenCode truncates its own tool output
+ * already, so both are raised and that truncation is the one that applies:
+ * - MCP_OUTPUT_LIMIT, tokens (MAX_MCP_OUTPUT_TOKENS, default 25000; a value
+ *   the user set wins);
+ * - MCP_RESULT_SIZE_LIMIT, characters (each tool's
+ *   `_meta["anthropic/maxResultSizeChars"]`, default 50,000, CLI max 500,000).
  */
 export const MCP_OUTPUT_LIMIT = 200_000;
+export const MCP_RESULT_SIZE_LIMIT = 500_000;
 
 /**
  * Name Claude Code reports for this plugin (CLAUDE_CODE_ENTRYPOINT, sent as

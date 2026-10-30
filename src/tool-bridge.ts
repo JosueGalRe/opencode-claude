@@ -5,6 +5,7 @@
  * permission rules and the next request resolves it.
  */
 import { randomUUID } from "node:crypto";
+import { MCP_RESULT_SIZE_LIMIT } from "./auth-env.js";
 import type { ParkedToolCall } from "./bridge-pool.js";
 import { log } from "./log.js";
 import type { McpToolResultContent } from "./prompt.js";
@@ -265,7 +266,7 @@ export async function buildOpenCodeMcpServer(
         if (PARALLEL_SAFE_TOOLS.has(name)) {
           extras.annotations = { readOnlyHint: true };
         }
-        return toolFactory(
+        const definition = toolFactory(
           name,
           description,
           shape,
@@ -293,7 +294,13 @@ export async function buildOpenCodeMcpServer(
             };
           },
           extras,
-        );
+        ) as { _meta?: Record<string, unknown> };
+        // Without it the CLI saves any result over 50,000 characters to a
+        // file Claude can't read (no built-in tools) and passes only its
+        // path; OpenCode truncates its own output. tool() takes no _meta, but
+        // the SDK lists the definition's.
+        definition._meta = { ...definition._meta, "anthropic/maxResultSizeChars": MCP_RESULT_SIZE_LIMIT };
+        return definition;
       })
       .filter(Boolean);
 
