@@ -707,24 +707,30 @@ function collectAnsweredToolStep(
 function answeredToolStepPrompt(
   messages: OpenAIMessage[],
   step: AnsweredToolStep,
+  options: { otherModel?: boolean } = {},
 ): SdkUserPrompt {
-  const { blocks, userBlocks } = toolStepBlocks(messages, step);
+  const otherModel = options.otherModel === true;
+  const { blocks, userBlocks } = toolStepBlocks(messages, step, otherModel);
   const content: AnthropicContentBlock[] = [
     {
       type: "text",
-      text: "<tool_results>\nYour previous step called the tools below, but the session that made those calls ended before OpenCode returned their results. They are relayed here. Do not repeat a call unless its result requires it.",
+      text: otherModel
+        ? "<tool_results>\nThe model that handled the turns above called the tools below as its last step. Their results are relayed here. Do not repeat a call unless its result requires it."
+        : "<tool_results>\nYour previous step called the tools below, but the session that made those calls ended before OpenCode returned their results. They are relayed here. Do not repeat a call unless its result requires it.",
     },
     ...blocks,
   ];
-  // The CLI records the calls of a stopped turn as rejected by the user.
-  const notStopped =
-    "If your session shows these calls as rejected, or the request as interrupted by the user, that came from the plugin (a reload, or a wait that timed out), not from the user: nobody asked you to stop.";
+  // The CLI records the calls of a stopped turn as rejected by the user;
+  // another model's calls never were Claude's to stop.
+  const notStopped = otherModel
+    ? ""
+    : "If your session shows these calls as rejected, or the request as interrupted by the user, that came from the plugin (a reload, or a wait that timed out), not from the user: nobody asked you to stop. ";
   content.push({
     type: "text",
     text:
       userBlocks.length > 0
-        ? `</tool_results>\n\n${notStopped} The user sent the following after those calls. Respond to it with the results in mind:`
-        : `</tool_results>\n\n${notStopped} Continue the task from these results.`,
+        ? `</tool_results>\n\n${notStopped}The user sent the following after those calls. Respond to it with the results in mind:`
+        : `</tool_results>\n\n${notStopped}Continue the task from these results.`,
   });
   content.push(...userBlocks);
   return {
@@ -773,12 +779,13 @@ function withStoppedTurnNote(prompt: string | SdkUserPrompt, history: OpenAIMess
 function toolStepBlocks(
   messages: OpenAIMessage[],
   step: AnsweredToolStep,
+  otherModel = false,
 ): { blocks: AnthropicContentBlock[]; userBlocks: AnthropicContentBlock[] } {
   const assistant = messages[step.assistantIndex];
   const content: AnthropicContentBlock[] = [];
   const stepText = extractTextContent(assistant.content).trim();
   if (stepText) {
-    content.push({ type: "text", text: `Your message in that step:\n${stepText}` });
+    content.push({ type: "text", text: `${otherModel ? "Its" : "Your"} message in that step:\n${stepText}` });
   }
   const calls = new Map(
     (assistant.tool_calls ?? []).map((call) => [call.id, call.function]),
@@ -1426,10 +1433,8 @@ async function handleChatCompletions(
     process.cwd();
   // Orphaned tool results rebuild the step, not the conversation: they can
   // still use the bound session and carry the results in their prompt.
-  const resumable = isMetaRequest ? {} : resumableSession(
-    conversationKey,
-    answeredStep ? messages.slice(0, answeredStep.assistantIndex) : priorMessages,
-  );
+  const stepBase = answeredStep ? messages.slice(0, answeredStep.assistantIndex) : priorMessages;
+  const resumable = isMetaRequest ? {} : resumableSession(conversationKey, stepBase);
   const resume = summaryResume?.sessionId ?? (resumable.forkAt
     ? await resumeThroughFork(conversationKey, resumable.forkAt, { modelId: model, cwd })
     : resumable.resume);
@@ -1440,11 +1445,12 @@ async function handleChatCompletions(
   // sees the whole conversation. Orphaned tool results carry their own step
   // in the prompt, so the history stops before it.
   // A resumed session gets only the turns it missed, if any: another model
-  // answered them. A rebuilt tool step continues Claude's own turn.
+  // answered them. A rebuilt tool step is Claude's own only when no such turn
+  // comes before it; after a model switch it is the other model's last step.
   const history = !resume
-    ? answeredStep ? messages.slice(0, answeredStep.assistantIndex) : priorMessages
-    : !answeredStep && resumable.latestCount !== undefined
-      ? historyAfterUserCount(priorMessages, resumable.latestCount)
+    ? stepBase
+    : resumable.latestCount !== undefined
+      ? historyAfterUserCount(stepBase, resumable.latestCount)
       : [];
   // A summary that can't resume gets the history sized to the chat model's
   // window: OpenCode already fit the request to it.
@@ -1460,7 +1466,10 @@ async function handleChatCompletions(
       historyMessages: history.length,
     });
   }
-  const contextualPrompt = withConversationContext(prompt, transcript, Boolean(resume));
+  const turnPrompt = answeredStep && resume && history.length > 0
+    ? answeredToolStepPrompt(messages, answeredStep, { otherModel: true })
+    : prompt;
+  const contextualPrompt = withConversationContext(turnPrompt, transcript, Boolean(resume));
 
   const bridgeId = randomUUID();
   // Bind the conversation to the Claude session this turn runs in, together

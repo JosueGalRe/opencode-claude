@@ -63,6 +63,41 @@ async function main() {
     assert.equal(next.resume, SESSION);
     assert.equal(next.prompt, "NEXT", "the turn after carries no history again");
 
+    // Claude's own answered tool step (no parked turn left): nothing missed,
+    // so the step is relayed as Claude's own, with no history.
+    const call = (id: string) => ({
+      role: "assistant",
+      content: "",
+      tool_calls: [{ id, type: "function", function: { name: "read", arguments: "{}" } }],
+    });
+    const afterNext = [...otherModel, assistant("CLAUDE-ANSWER-THREE"), user("NEXT")];
+    const own = await turn([...afterNext, call("call_own"), { role: "tool", tool_call_id: "call_own", content: "OWN-RESULT" }]);
+    assert.equal(own.resume, SESSION);
+    assert.match(own.prompt, /Your previous step called the tools below/);
+    assert.match(own.prompt, /OWN-RESULT/);
+    assert.doesNotMatch(own.prompt, /conversation_history/, "Claude's own step carries no history");
+
+    // Another model's turns end in its answered tool step (ported from
+    // upstream 14b0ea6): the turns before the step are handed over, and the
+    // step is not called Claude's.
+    const switchedStep = await turn([
+      ...afterNext,
+      assistant("CLAUDE-ANSWER-FOUR"),
+      user("OTHER-ASK-THREE"),
+      assistant("OTHER-ANSWER-THREE"),
+      user("OTHER-ASK-FOUR"),
+      call("call_other"),
+      { role: "tool", tool_call_id: "call_other", content: "OTHER-RESULT" },
+      user("KEEP-GOING"),
+    ]);
+    assert.equal(switchedStep.resume, SESSION);
+    const [handover, step] = switchedStep.prompt.split("</conversation_history>");
+    assert.match(handover!, /OTHER-ASK-THREE[\s\S]*OTHER-ANSWER-THREE[\s\S]*OTHER-ASK-FOUR/);
+    assert.doesNotMatch(handover!, /CLAUDE-|OTHER-RESULT/, "seen turns and the step itself are not in the handover");
+    assert.match(step!, /The model that handled the turns above called the tools below/);
+    assert.doesNotMatch(step!, /Your previous step|rejected/);
+    assert.match(step!, /OTHER-RESULT[\s\S]*KEEP-GOING/);
+
     // A legacy binding without turn boundaries can't tell where the missed
     // turns start: it still transfers the whole history.
     store.setForeignSessionId("legacy", SESSION, { history: store.historyFingerprint(claudeTurns.slice(0, 1)) });

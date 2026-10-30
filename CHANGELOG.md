@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Switching back to Claude after another model's tool step keeps its
+  work** (ported from upstream 1.6.1): when the other model's last step was
+  an answered tool call, the plugin took that step for Claude's own. Claude
+  resumed without the other model's turns and was told the relayed calls
+  were its own. The turns it missed are handed over for a rebuilt tool step
+  too, and the step is relayed as the other model's.
 - **Cache warming no longer runs Claude turns** (ported from upstream
   1.6.1): with OpenCode's `"warming": true`, an idle chat gets a generate
   ping every 4 minutes for 30 minutes after each turn. Through the plugin

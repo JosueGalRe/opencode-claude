@@ -397,6 +397,9 @@ async function main() {
 
     // --- Tool results with no parked turn reach Claude. ---
     await turn("orphan", [user("hello")]);
+    // The turn that made the call started here, so the session saw its
+    // prompt; nothing was missed and the step is Claude's own.
+    await turn("orphan", [user("hello"), assistant("hi"), user("list the files")]);
     const orphanCalls = calls.length;
     await turn("orphan", [
       user("hello"),
