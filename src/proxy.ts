@@ -101,7 +101,6 @@ import {
   userHistoryFingerprints,
   withConversationContext,
   withLeadingText,
-  withStoppedTurnNote,
   buildRuntimeInstructions,
   withSteering,
   type McpToolResultContent,
@@ -631,10 +630,11 @@ type SummaryResumePoint = {
   promptIndex: number;
   profile?: ChatTurnProfile;
   /**
-   * The plugin stopped the chat's parked turn for this compaction and the
-   * summary resumes after it, where the CLI recorded the stop as the user's.
+   * Messages of the chat's live turn, which the session holds only up to an
+   * unanswered tool call: the summary resumes before that turn and reads
+   * them as text.
    */
-  afterStoppedTurn?: boolean;
+  liveTurn?: OpenAIMessage[];
 };
 
 /**
@@ -660,8 +660,8 @@ const SUMMARY_NUDGE_MARKER = "did not fill in the required summary template";
 function summaryResumePoint(
   chatKey: string,
   messages: OpenAIMessage[],
-  stoppedTurn: boolean,
   configDir?: string,
+  liveTurn = false,
 ): SummaryResumePoint | null {
   const sessionId = getForeignSessionId(chatKey);
   if (!sessionId) return null;
@@ -679,7 +679,23 @@ function summaryResumePoint(
   const match = matchTurnHistory(turns, prints);
   let source: string;
   let leafUuid: string | undefined;
-  if (match.kind === "rewind" && match.leafUuid) {
+  let liveMessages: OpenAIMessage[] | undefined;
+  if (liveTurn) {
+    // A turn still running (background compaction) may end its session on
+    // an unanswered tool call, which no resume can cut at. Resume at the end
+    // of the turn before it; the live turn's messages go along as text.
+    const previous = turns.at(-2);
+    if (
+      match.kind !== "latest" ||
+      !previous?.leafUuid ||
+      prints[previous.count - 1] !== previous.hash
+    ) {
+      return null;
+    }
+    source = previous.sessionId ?? sessionId;
+    leafUuid = previous.leafUuid;
+    liveMessages = historyAfterUserCount(messages.slice(0, promptIndex), previous.count);
+  } else if (match.kind === "rewind" && match.leafUuid) {
     source = match.sessionId ?? sessionId;
     leafUuid = match.leafUuid;
   } else if (match.kind === "latest" && turns.at(-1)!.count === prints.length) {
@@ -696,7 +712,7 @@ function summaryResumePoint(
     leafUuid,
     promptIndex,
     profile: chatTurnProfiles.get(chatKey),
-    ...(stoppedTurn && match.kind === "latest" ? { afterStoppedTurn: true } : {}),
+    ...(liveMessages?.length ? { liveTurn: liveMessages } : {}),
   };
 }
 
@@ -836,31 +852,29 @@ async function handleChatCompletions(
   const conversationKey =
     requestKeyNamespace(metaKind) +
     (sessionHeader || (standalone ? `req_${randomUUID()}` : conversationKeyFromMessages(messages)));
-  // OpenCode is compacting this chat. The Claude session it would resume
-  // still holds the full uncompacted context, so drop the binding: the next
-  // turn starts a fresh Claude session from the compacted history instead.
-  // A turn parked on a tool call belongs to that old session too. Left
-  // alive, it re-emits its call to the compacted chat together with the old
-  // context size, and OpenCode compacts again, in a loop. Stop it first, so
-  // its last events can't write the binding back either.
+  // OpenCode is summarizing this chat. The chat itself is left alone: with
+  // background compaction the summary is written ahead of time while the
+  // chat goes on with its full history, and stopping its turn or dropping
+  // its binding here started one fresh Claude session now and another when
+  // the summary was swapped in. The compacted history replaces the session
+  // once it arrives: it matches none of the session's turns, so the turn
+  // that carries it moves to a fresh session, and a turn parked on the old
+  // history is stopped first (the checks below).
   let summaryResume: SummaryResumePoint | null = null;
   if (metaKind === "summary") {
     const chatKey = sessionHeader || conversationKeyFromMessages(messages);
-    const stopped = await stopConversationBridges(chatKey, "Chat compacted");
-    if (stopped > 0) {
-      log.info("[opencode-claude] stopped the turn of a chat being compacted", {
-        conversationKey: chatKey,
-      });
-    }
-    summaryResume = summaryResumePoint(chatKey, messages, stopped > 0, requestConfigDir(req));
+    const liveTurn = Boolean(findBridgeByConversation(chatKey));
+    summaryResume = summaryResumePoint(chatKey, messages, requestConfigDir(req), liveTurn);
     log.info(
       summaryResume
         ? "[opencode-claude] summarizing from the chat's Claude session"
         : "[opencode-claude] summarizing from the history text; the chat's Claude session can't be resumed at the summarized part",
-      { conversationKey: chatKey, cachedProfile: Boolean(summaryResume?.profile) },
+      {
+        conversationKey: chatKey,
+        cachedProfile: Boolean(summaryResume?.profile),
+        liveTurn,
+      },
     );
-    clearForeignSessionId(chatKey);
-    chatTurnProfiles.delete(chatKey);
   }
   const selection = selectionFromRequest(req, body);
   const model = resolveClaudeModelId(selection.modelId);
@@ -883,9 +897,12 @@ async function handleChatCompletions(
       count: promotedMedia,
     });
   }
-  let existing = findBridgeByConversation(conversationKey);
+  // Only a chat turn continues a parked turn. A summary or generate request
+  // carries the chat's tool results too, and the chat's turn may still be
+  // parked on them (background compaction leaves it running).
+  let existing = metaKind === null ? findBridgeByConversation(conversationKey) : undefined;
   // Fallback: match by tool_call_id when the session header is missing/changed.
-  if ((!existing || existing.pendingTools.size === 0) && toolResults.size > 0) {
+  if (metaKind === null && (!existing || existing.pendingTools.size === 0) && toolResults.size > 0) {
     for (const toolCallId of toolResults.keys()) {
       const byTool = findBridgeByPendingTool(toolCallId);
       if (byTool) {
@@ -1176,11 +1193,6 @@ async function startNewTurn(input: {
   const prompt =
     answeredStep !== null
       ? answeredToolStepPrompt(messages, answeredStep)
-      : summaryResume?.afterStoppedTurn
-        ? withStoppedTurnNote(
-            latestUserPrompt(messages.slice(0, summaryResume.promptIndex + 1)),
-            messages.slice(0, summaryResume.promptIndex),
-          )
       : summaryResume
         ? latestUserPrompt(messages.slice(0, summaryResume.promptIndex + 1))
         : latestUserPrompt(messages);
@@ -1296,7 +1308,7 @@ async function startNewTurn(input: {
   // Turns after this chat's last Claude turn that the session never saw:
   // the user switched to another model for them, or they failed before
   // Claude ran. A resume alone would skip them.
-  let missedMessages: typeof priorMessages = [];
+  let missedMessages: typeof priorMessages = summaryResume?.liveTurn ?? [];
   if (resume && sessionFile && !isMetaRequest) {
     const match = matchTurnHistory(
       getSessionTurns(conversationKey),

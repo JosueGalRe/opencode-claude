@@ -119,7 +119,9 @@ async function main() {
     const text = await promptText(params.prompt);
     assert.ok(text.includes(SUMMARY_PROMPT));
     assert.ok(!text.includes("<conversation_history>"), "no text copy of the chat");
-    assert.equal(getForeignSessionId("chat"), undefined, "the chat starts a new session after compaction");
+    // The chat keeps its session: with background compaction it goes on
+    // with its full history until the summary is swapped in.
+    assert.equal(getForeignSessionId("chat"), "chat-sess-1", "the summary leaves the chat's binding");
   }
 
   // Same chat again, with a reminder after a reply that missed the template.

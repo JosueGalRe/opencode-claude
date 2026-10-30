@@ -3,7 +3,9 @@
  * The parked turn belongs to the uncompacted Claude session. Left alive, it
  * re-emitted its call to every continuation of the compacted chat, with the
  * old context size, and OpenCode compacted again, over and over. The summary
- * request now stops that turn, and the continuation starts a new one.
+ * leaves the turn alone (background compaction writes it while the chat goes
+ * on); the continuation carrying the compacted history stops it and starts a
+ * new one.
  *
  * Run: bun test/compaction-park-regression.ts
  */
@@ -50,7 +52,9 @@ async function main() {
     });
     assert.equal(summary.status, 200);
     await summary.text();
-    assert.ok(log.includes("turn:interrupt"), "parked turn stopped by the compaction");
+    // Background compaction writes the summary while the chat goes on, so
+    // the summary leaves the parked turn alone.
+    assert.ok(!log.includes("turn:interrupt"), "the summary does not stop the chat's turn");
 
     proxy.setClaudeQueryStarter(async () => {
       log.push("next:spawn");
@@ -68,6 +72,7 @@ async function main() {
     });
     const body = (await next.json()) as any;
     assert.equal(body.choices[0].finish_reason, "stop", "no stale tool call re-emitted");
+    assert.ok(log.includes("turn:interrupt"), "the compacted history stops the parked turn");
     assert.ok(log.includes("next:spawn"), "continuation ran as a new turn");
     console.log("compaction-park regression ok");
   } finally {

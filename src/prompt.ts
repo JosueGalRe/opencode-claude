@@ -870,41 +870,6 @@ function toolStepBlocks(
   return { blocks, userBlocks };
 }
 
-/**
- * The summary of a chat whose turn the plugin stopped to compact it. The
- * CLI recorded the turn's pending calls as rejected and the request as
- * interrupted by the user; the summary must not pass that on as the user's
- * decision. Results OpenCode already has for that step are relayed.
- */
-export function withStoppedTurnNote(
-  prompt: string | SdkUserPrompt,
-  history: ToolStepMessage[],
-): SdkUserPrompt {
-  const step = answeredToolStepIndex(history);
-  const { blocks } = step === null ? { blocks: [] } : toolStepBlocks(history, step);
-  const note: AnthropicContentBlock[] = [
-    {
-      type: "text",
-      text:
-        "<host_note>\nYour turn was stopped by the plugin so OpenCode could compact this chat. If your session shows your last tool calls as rejected, or the request as interrupted by the user, that came from the plugin, not from the user: nobody rejected anything or asked you to stop. Do not record it as a user decision; treat those calls as unfinished unless a result is relayed below." +
-        (blocks.length > 0 ? "\n\nResults OpenCode received for that step:" : ""),
-    },
-    ...blocks,
-    { type: "text", text: "</host_note>" },
-  ];
-  const content =
-    typeof prompt === "string"
-      ? [{ type: "text" as const, text: prompt }]
-      : Array.isArray(prompt.message.content)
-        ? prompt.message.content
-        : [{ type: "text" as const, text: prompt.message.content }];
-  return {
-    type: "user",
-    message: { role: "user", content: [...note, ...content] },
-    parent_tool_use_id: null,
-  };
-}
-
 export async function* promptAsStream(
   prompt: string | SdkUserPrompt,
 ): AsyncGenerator<SdkUserPrompt, void, unknown> {
