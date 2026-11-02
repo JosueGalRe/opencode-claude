@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **No silent non-streaming retry**: when a stream broke partway, Claude
+  Code re-sent the request without streaming, and the plugin, which reads
+  Claude's text only from the stream, never passed that answer on. Claude
+  Code now runs with `CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK=1`, so the
+  failure shows up as an error instead, as in OpenCode's built-in Claude
+  Agent provider.
 - **Long tool results reach Claude whole**: Claude Code caps an MCP tool
   result at 25000 tokens and at 50,000 characters, and past either it saved
   the result to a file and handed Claude only its path, which it can't read

@@ -62,5 +62,9 @@ export function buildClaudeCodeChildEnv(
     env.MAX_MCP_OUTPUT_TOKENS = String(MCP_OUTPUT_LIMIT);
   }
   env.CLAUDE_CODE_ENTRYPOINT = env.OPENCODE_CLAUDE_ENTRYPOINT?.trim() || CLAUDE_ENTRYPOINT;
+  // When a stream breaks partway, Claude Code re-sends the request without
+  // streaming, and that answer's text never reaches OpenCode: the proxy reads
+  // text only from stream deltas. Failing instead takes the error path.
+  env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = "1";
   return env;
 }
