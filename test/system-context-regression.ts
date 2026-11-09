@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PROXY_TOKEN_HEADER } from "../src/constants.ts";
+import { PROXY_TOKEN_HEADER, SYSTEM_PREPARED_HEADER } from "../src/constants.ts";
 
 const ENV_BLOCK = [
   "You are powered by the model named claude-sonnet. The exact model ID is claude-code/sonnet",
@@ -23,7 +23,7 @@ const INSTRUCTIONS = "Instructions from: /repo/AGENTS.md\n# Rules\n- Run tests s
 const SKILLS = "<available_skills>\n  <skill><name>pdf</name></skill>\n</available_skills>";
 
 async function main() {
-  const { turnSystemPrompt, openCodeSystemContext } = await import(
+  const { turnSystemPrompt, openCodeSystemContext, systemContextFromParts, hasInstructionSources } = await import(
     "../src/system-context.ts"
   );
 
@@ -52,168 +52,70 @@ async function main() {
   assert.match(custom, /Run tests sequentially/);
   assert.ok(!custom.includes("Working directory"));
 
-  // V2 stock agent: model/env sections are Anthropic's third-party
-  // fingerprint; the Code Mode catalog is forwarded only with execute.
-  const v2Env = [
-    "# Your Model",
-    "- Name: Sonnet 5",
-    "- Provider ID: claude-code",
-    "Here is some useful information about the environment you are running in:",
-    "<env>",
-    "  Working directory: /repo",
-    "</env>",
-    "Today's date: Tue Sep 22 2026",
-    "# Code Mode",
-    "Use the `execute` tool to call the tools listed below. They cannot be called directly, and neither can `search`. Both only work inside code you pass to `execute`.",
-    "The catalog is partial. Inside `execute`, use `search(...)` to find a tool, then call it by the `path` in the result. `search` is synchronous. Call it without `await`; it does not return a Promise. Do not guess tool names.",
-    "## Available tools",
-    "- railway (47 tools, 1 shown)",
-    "  - tools.railway.whoami(): Promise<unknown>",
-    "- openchamber (1 tool)",
-    "  - tools.openchamber({ action }): Promise<string | null>",
-  ].join("\n");
-  const v2Stock = openCodeSystemContext([
-    {
-      role: "system",
-      content: `You are an AI agent running in OpenCode, a coding agent harness.\n\n# Harness\n- Prefer dedicated tools.\n${v2Env}\n\n${INSTRUCTIONS}\n\n${SKILLS}`,
-    },
-    { role: "user", content: "hi" },
-  ]);
-  assert.ok(!v2Stock.includes("coding agent harness"), "v2 stock base skipped");
-  assert.ok(!v2Stock.includes("Your Model"), "v2 model section skipped");
-  assert.ok(!v2Stock.includes("Working directory"), "v2 env block skipped");
-  assert.ok(!v2Stock.includes("Code Mode"), "v2 code-mode catalog skipped");
-  assert.ok(!v2Stock.includes("Today's date"), "v2 date line skipped");
-  assert.ok(!v2Stock.includes("# Agent role"));
-  assert.match(v2Stock, /Run tests sequentially/);
-  assert.match(v2Stock, /<name>pdf<\/name>/);
-
-  const v2Messages = [{ role: "system", content: `You are an AI agent running in OpenCode, a coding agent harness.\n\n${v2Env}\n\n${INSTRUCTIONS}\n\n${SKILLS}` }];
-  const noExecute = turnSystemPrompt(null, v2Messages, ["read"]);
-  assert.ok(typeof noExecute !== "string");
-  assert.ok(!noExecute.append?.includes("tools.railway"));
-  assert.match(noExecute.append ?? "", /Run tests sequentially/);
-
-  const withExecute = turnSystemPrompt(null, v2Messages, ["execute"]);
-  assert.ok(typeof withExecute !== "string");
-  const append = withExecute.append ?? "";
-  assert.match(append, /tools\.railway\.whoami/);
-  assert.match(append, /tools\.openchamber/);
-  assert.equal(append.match(/# Code Mode/g)?.length, 1);
-  assert.match(append, /mcp__opencode__execute/);
-  assert.match(append, /Run tests sequentially/);
-  assert.match(append, /<name>pdf<\/name>/);
-  assert.ok(append.indexOf("tools.openchamber") < append.indexOf("Run tests sequentially"));
-  assert.doesNotMatch(append, /# Your Model|Working directory|Today's date|coding agent harness/);
-
-  // Sections after the catalog are user or plugin configuration.
-  const noInstructions = turnSystemPrompt(null, [
-    { role: "system", content: `You are an AI agent running in OpenCode.\n\n${v2Env}\n# Skills\nprivate rules` },
-  ], ["execute"]);
-  assert.ok(typeof noInstructions !== "string");
-  assert.match(noInstructions.append ?? "", /tools\.railway\.whoami/);
-  assert.match(noInstructions.append ?? "", /# Skills\nprivate rules/);
-  assert.equal(noInstructions.append?.match(/tools\.railway\.whoami/g)?.length, 1);
-
-  // V2 2.0.19+: Code Mode, MCP notes, skills and instructions come before
-  // the date and <env>; plugins append after them; later changes arrive as
-  // extra system messages.
-  const v2Next = [
-    { role: "system", content: "You are an AI agent running in OpenCode, a coding agent harness." },
-    { role: "system", content: "# Your Model\n- Name: Claude Opus 5.5\n- Provider ID: claude-code\n- Model ID: claude-opus-5-5" },
-    {
-      role: "system",
-      content: [
-        "# Code Mode",
-        "",
-        "Use the `execute` tool to call the tools listed below. They cannot be called directly. They only work inside code you pass to `execute`.",
-        "",
-        "The catalog is complete. Do not guess tool names.",
-        "",
-        "## Available tools",
-        "",
-        "- railway (1 tool)",
-        "  - tools.railway.whoami(): Promise<unknown>",
-        "",
-        "<mcp_instructions>\n  <server name=\"ctx\">\n    Use ctx wisely.\n  </server>\n</mcp_instructions>",
-        "",
-        `Skills provide specialized instructions and workflows for specific tasks.\n${SKILLS}`,
-        "",
-        INSTRUCTIONS,
-        "",
-        // Session context a host attached (OpenChamber's guidance, notes,
-        // memory, checkout), rendered like any other instruction source.
-        '<context key="openchamber.guidance">\nLink each pull request you open with session.link.\n</context>',
-        "",
-        "Today's date: Thu Oct 01 2026",
-        "",
-        "Here is some useful information about the environment you are running in:\n<env>\n  Working directory: /repo\n  Platform: linux\n</env>",
-      ].join("\n"),
-    },
-    { role: "system", content: "PONYTAIL MODE ACTIVE" },
-    { role: "user", content: "hi" },
-    { role: "system", content: "Today's date is now: Fri Oct 02 2026" },
-    { role: "system", content: "The environment you are running in is now:\n<env>\n  Working directory: /other\n</env>" },
+  // V2 (2.2.3+) is read by structure: part 0 is the agent's prompt, the
+  // identity plugin's "# Your Model" is a part of its own, the instructions
+  // part lists its sources by key, plugins push parts after it.
+  const CODE_MODE = "# Code Mode\n\nThe catalog is complete. Do not guess tool names.\n\n## Code Mode tools (call only inside `execute`)\n\n- railway (1 tool)\n  - tools.railway.whoami(): Promise<unknown>";
+  const source = (key: string, text: string) => ({ key, text });
+  const v2Parts = (base: string, sources = [
+    source("core/codemode", CODE_MODE),
+    source("core/mcp-guidance", "<mcp_instructions>\n  <server name=\"ctx\">\n    Use ctx wisely.\n  </server>\n</mcp_instructions>"),
+    source("core/skill-guidance", `Skills provide specialized instructions and workflows for specific tasks.\n${SKILLS}`),
+    source("core/instructions", INSTRUCTIONS),
+    source("openchamber.guidance", '<context key="openchamber.guidance">\nLink each pull request you open with session.link.\n</context>'),
+    source("core/date", "Today's date: Thu Oct 01 2026"),
+    source("core/environment", "Here is some useful information about the environment you are running in:\n<env>\n  Working directory: /repo\n  Platform: linux\n</env>"),
+  ]) => [
+    { text: base },
+    { text: "# Your Model\n- Name: Claude Opus 5.5\n- Provider ID: claude-code\n- Model ID: claude-opus-5-5" },
+    { text: sources.map((s) => s.text).join("\n\n"), metadata: { experimental: { instructions: sources } } },
+    { text: "PONYTAIL MODE ACTIVE" },
   ];
-  const v2NextContext = openCodeSystemContext(v2Next);
+  const STOCK_V2 = "You are an AI agent running in OpenCode, a coding agent harness.\n\n# Harness\n- Prefer dedicated tools.";
+  const OPENCODE_BLOCKS = /coding agent harness|Your Model|Model ID|Working directory|<env>|Today's date/;
+
+  assert.equal(hasInstructionSources(v2Parts(STOCK_V2)), true);
+  assert.equal(hasInstructionSources([{ text: `${STOCK_V2}\n# Your Model\n- Name: X` }]), false, "pre-2.2.3 V2 has no keyed sources");
+
+  const v2Stock = systemContextFromParts(v2Parts(STOCK_V2), "", ["read"], "/nonexistent");
   for (const kept of [/Run tests sequentially/, /<name>pdf<\/name>/, /Use ctx wisely/, /PONYTAIL MODE ACTIVE/, /<context key="openchamber\.guidance">\nLink each pull request/]) {
-    assert.match(v2NextContext, kept);
+    assert.match(v2Stock, kept);
   }
-  assert.doesNotMatch(v2NextContext, /Your Model|Model ID|Working directory|<env>|Today's date|Code Mode|tools\.railway|coding agent harness|# Agent role/);
-  const v2NextExecute = turnSystemPrompt(null, v2Next, ["execute"]);
-  assert.ok(typeof v2NextExecute !== "string");
-  assert.equal(v2NextExecute.append?.match(/# Code Mode/g)?.length, 1);
-  assert.match(v2NextExecute.append ?? "", /tools\.railway\.whoami\(\): Promise<unknown>\n\nThe `execute` tool above/);
-  assert.match(v2NextExecute.append ?? "", /Run tests sequentially/);
-  assert.doesNotMatch(v2NextExecute.append ?? "", /Your Model|Working directory|Today's date/);
-  const v2NextRead = turnSystemPrompt(null, v2Next, ["read"]);
-  assert.ok(typeof v2NextRead !== "string");
-  assert.doesNotMatch(v2NextRead.append ?? "", /tools\.railway|Code Mode/);
+  assert.doesNotMatch(v2Stock, OPENCODE_BLOCKS);
+  assert.doesNotMatch(v2Stock, /Code Mode|tools\.railway|# Agent role/, "catalog only with execute");
 
-  // The catalog ends with its listing (upstream #35): multi-line signatures
-  // stay, a partial catalog's search guidance stays, CRLF and a heading or
-  // whitespace-only line end it, unheaded sections after it don't join it.
-  const catalog = [
-    "# Code Mode", "", "The catalog is partial. Use `search(...)` to find a tool.", "", "- search(query: string)", "",
-    "## Available tools", "", "- demo (2 tools) // Example tools",
-    "  - tools.demo.read({", "  path: string,", "}): Promise<string> // Read a file",
-    "  - tools.demo.status(): Promise<string>",
-  ].join("\n");
-  const catalogOf = (after: string, sep = "\n\n", source = catalog, tools = ["execute"]) => {
-    const prompt = turnSystemPrompt(null, [
-      { role: "system", content: "You are an AI agent running in OpenCode." },
-      { role: "system", content: "# Your Model\n- Name: X" },
-      { role: "system", content: `${source.replaceAll("\n", sep === "\r\n \t\r\n" ? "\r\n" : "\n")}${sep}${after}` },
-    ], tools);
-    assert.ok(typeof prompt !== "string");
-    return tools.includes("execute")
-      ? prompt.append?.match(/# Code Mode[\s\S]*?(?=\n\nThe `execute` tool above)/)?.[0]
-      : prompt.append ?? "";
-  };
-  const envAfter = "Today's date: Thu Oct 01 2026\n\nHere is some useful information about the environment you are running in:\n<env>\n</env>";
-  for (const after of [envAfter, "<mcp_instructions>m</mcp_instructions>\n\n" + envAfter, "Some plugin note\n\n" + envAfter]) {
-    assert.equal(catalogOf(after), catalog);
-  }
-  assert.equal(catalogOf(`# Other instructions\nExample\n\n${envAfter}`, "\n"), catalog);
-  assert.equal(catalogOf(`## Other instructions\nExample\n\n${envAfter}`, "\n"), catalog);
-  assert.equal(catalogOf(envAfter, "\r\n \t\r\n"), catalog.replaceAll("\n", "\r\n"));
+  const v2Execute = systemContextFromParts(v2Parts(STOCK_V2), "", ["execute"], "/nonexistent");
+  assert.equal(v2Execute.match(/^# Code Mode$/gm)?.length, 1);
+  assert.match(v2Execute, /tools\.railway\.whoami\(\): Promise<unknown>\n\nThe `execute` tool above is mcp__opencode__execute\./);
+  assert.ok(v2Execute.indexOf("tools.railway") < v2Execute.indexOf("Run tests sequentially"));
+  assert.doesNotMatch(v2Execute, OPENCODE_BLOCKS);
 
-  // OpenCode 2.2.1 heads the listing "## Code Mode tools (call only inside
-  // `execute`)". Unrecognized, the catalog stayed in the forwarded context:
-  // without the `execute` note, and even when `execute` is not bridged.
-  const catalog221 = [
-    "# Code Mode", "",
-    "The tools listed below, and `search`, cannot be called directly: they only work as JavaScript inside the `execute` tool. Every other tool you have is a normal tool call: call it directly, never inside `execute`.", "",
-    "The catalog is partial. Before calling a tool that is not listed below, find it with the global `search(...)` function. Do not guess tool names.", "",
-    "- search(query: string)", "",
-    "## Code Mode tools (call only inside `execute`)", "", "- demo (2 tools) // Example tools",
-    "  - tools.demo.read({", "  path: string,", "}): Promise<string> // Read a file",
-    "  - tools.demo.status(): Promise<string>",
-  ].join("\n");
-  for (const after of [envAfter, "Some plugin note\n\n" + envAfter]) {
-    assert.equal(catalogOf(after, "\n\n", catalog221), catalog221);
-  }
-  assert.doesNotMatch(String(catalogOf("Some plugin note\n\n" + envAfter, "\n\n", catalog221, ["read"])), /Code Mode|tools\.demo/);
+  // A custom agent's prompt is forwarded whatever its wording: one that opens
+  // like the stock prompt, or has its own "# Your Model" heading. The stock
+  // identity part still stays out.
+  const role = "You are OpenCode's release bot.\n\n# Your Model\nAlways answer as a release manager.";
+  const v2Custom = systemContextFromParts(v2Parts(role), role, ["read"], "/nonexistent");
+  assert.match(v2Custom, /# Agent role[\s\S]*release bot[\s\S]*Always answer as a release manager/);
+  assert.match(v2Custom, /Instructions from: \/repo\/AGENTS.md\n# Rules\n- Run tests sequentially/);
+  assert.doesNotMatch(v2Custom, /Model ID|Provider ID|Working directory|Today's date/);
+
+  // User instructions that quote OpenCode's wording stay whole.
+  const quoting = v2Parts(STOCK_V2).map((part) => {
+    const sources = (part as { metadata?: any }).metadata?.experimental.instructions;
+    if (!sources) return part;
+    const next = sources.map((s: { key: string; text: string }) =>
+      s.key === "core/instructions" ? { ...s, text: `${s.text}\n\nToday's date: write it as ISO.\n\n<env>\n  FOO=bar\n</env>` } : s);
+    return { text: part.text, metadata: { experimental: { instructions: next } } };
+  });
+  const quoted = systemContextFromParts(quoting, "", ["read"], "/nonexistent");
+  assert.match(quoted, /Today's date: write it as ISO\.\n\n<env>\n  FOO=bar\n<\/env>/);
+  assert.doesNotMatch(quoted, /Working directory|Thu Oct 01 2026/);
+
+  // Prepared text reaches the preset as is, after the bridged-tool rules.
+  const prepared = turnSystemPrompt(null, [{ role: "system", content: v2Execute }], ["execute"], undefined, true);
+  assert.ok(typeof prepared !== "string");
+  assert.match(prepared.append ?? "", /^You are running inside OpenCode/);
+  assert.ok(prepared.append?.endsWith(`\n\n${v2Execute}`));
 
   // Instruction files Claude Code loads itself for the turn's directory are
   // left to it; the rest of OpenCode's instructions still go.
@@ -239,16 +141,16 @@ async function main() {
     block(copy, "Global Claude rules."),
     block(stale, "What OpenCode loaded."),
   ].join("\n\n");
-  const withFiles = [
-    { role: "system", content: "You are an AI agent running in OpenCode." },
-    { role: "system", content: `# Your Model\n- Name: X\n\n${instructions}\n\nHere is some useful information about the environment you are running in:\n<env>\n</env>` },
-  ];
-  const deduped = openCodeSystemContext(withFiles, join(project, "sub"));
+  const withFiles = v2Parts(STOCK_V2, [source("core/instructions", instructions)]);
+  const deduped = systemContextFromParts(withFiles, "", [], join(project, "sub"));
   assert.match(deduped, /Call me Bryan/);
   assert.match(deduped, /What OpenCode loaded/);
   assert.doesNotMatch(deduped, /Project agents rules|Second paragraph|Project Claude rules|Global Claude rules/);
   assert.doesNotMatch(deduped, /project\/AGENTS\.md|linked\.md|copy\.md|\n{3,}/);
-  assert.match(openCodeSystemContext(withFiles), /Second paragraph[\s\S]*Global Claude rules/);
+  // Outside the project only the global CLAUDE.md is Claude Code's own.
+  const outside = systemContextFromParts(withFiles, "", [], files);
+  assert.match(outside, /Second paragraph[\s\S]*Project Claude rules/);
+  assert.doesNotMatch(outside, /Global Claude rules/);
 
   // A CLAUDE.md that `@path`-imports a file (nested, `~/`-free here) makes
   // Claude Code load it; an import inside a code span is only text.
@@ -259,53 +161,32 @@ async function main() {
   const literal = write(join(files, "literal.md"), "Literal rules.\n");
   write(join(files, "claude", "CLAUDE.md"),
     `@${global}\n\n- chain @${join(files, "imports", "chain-a.md")}\n- literal \`@${literal}\`\n`);
-  const imported = openCodeSystemContext([
-    { role: "system", content: "You are an AI agent running in OpenCode." },
-    { role: "system", content: `# Your Model\n- Name: X\n\n${[block(global, "Call me Bryan."), block(chained, "Chained rules."), block(literal, "Literal rules.")].join("\n\n")}\n\nHere is some useful information about the environment you are running in:\n<env>\n</env>` },
-  ], join(project, "sub"));
+  const imported = systemContextFromParts(
+    v2Parts(STOCK_V2, [source("core/instructions", [block(global, "Call me Bryan."), block(chained, "Chained rules."), block(literal, "Literal rules.")].join("\n\n"))]),
+    "",
+    [],
+    join(project, "sub"),
+  );
   assert.doesNotMatch(imported, /Call me Bryan|Chained rules/);
   assert.match(imported, /Instructions from: [^\n]*literal\.md\nLiteral rules\./);
   delete process.env.CLAUDE_CONFIG_DIR;
 
-  // V2 custom agent: its prompt replaces the stock opener and is forwarded.
-  const v2Custom = openCodeSystemContext([
-    {
-      role: "system",
-      content: `You are a pirate tester.\n${v2Env}\n\n${INSTRUCTIONS}`,
-    },
-  ]);
-  assert.match(v2Custom, /# Agent role[\s\S]*pirate tester/);
-  assert.match(v2Custom, /Instructions from: \/repo\/AGENTS.md\n# Rules\n- Run tests sequentially/);
-  assert.ok(!v2Custom.includes("Your Model"));
-  assert.ok(!v2Custom.includes("Working directory"));
-
-  // V2 layout without a recognizable env block: forward nothing but a custom
-  // agent prompt rather than risk the third-party credential rejection.
-  const v2Unparsed = openCodeSystemContext([
-    {
-      role: "system",
-      content:
-        "You are an AI agent running in OpenCode, a coding agent harness.\n# Your Model\n- Name: Sonnet 5\n(no env block in this layout)\nsecret boilerplate",
-    },
-  ]);
-  assert.equal(v2Unparsed, "");
-
   assert.equal(openCodeSystemContext([{ role: "user", content: "hi" }]), "");
 
   // V2 compaction carries its instructions in the user turn: the agent's
-  // system prompt, third-party fingerprint included, stays out. V1 summary
-  // agents carry theirs in the system prompt, which is kept.
+  // context stays out. V1 summary agents carry theirs in the system prompt,
+  // which is kept.
   const v2Summary = String(turnSystemPrompt(
     "summary",
     [
-      { role: "system", content: `You are a pirate tester.\n${v2Env}\n${INSTRUCTIONS}` },
+      { role: "system", content: v2Custom },
       { role: "user", content: "Summarize the conversation above." },
     ],
     null,
+    undefined,
+    true,
   ));
-  assert.ok(!v2Summary.includes("Your Model"), "v2 compaction drops the system prompt");
-  assert.ok(!v2Summary.includes("pirate tester"));
-  assert.ok(!v2Summary.includes("tools.railway"));
+  assert.ok(!v2Summary.includes("release bot"), "v2 compaction drops the system prompt");
   assert.match(v2Summary, /single-turn text transformation/);
   const v1Summary = String(turnSystemPrompt(
     "summary",
@@ -333,13 +214,14 @@ async function main() {
       close: () => {},
     };
   });
-  const send = async (session: string) => {
+  const send = async (session: string, system = `You are a harsh reviewer.\n${ENV_BLOCK}\n${INSTRUCTIONS}`, extra: Record<string, string> = {}) => {
     const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         [PROXY_TOKEN_HEADER]: getProxyAuthToken(),
         "x-opencode-claude-session": session,
+        ...extra,
       },
       body: JSON.stringify({
         model: "sonnet",
@@ -355,10 +237,7 @@ async function main() {
           },
         ],
         messages: [
-          {
-            role: "system",
-            content: `You are a harsh reviewer.\n${ENV_BLOCK}\n${INSTRUCTIONS}`,
-          },
+          { role: "system", content: system },
           { role: "user", content: "review this" },
         ],
       }),
@@ -375,6 +254,11 @@ async function main() {
     assert.match(on.append ?? "", /mcp__opencode__/);
     assert.match(on.append ?? "", /harsh reviewer/);
     assert.match(on.append ?? "", /Run tests sequentially/);
+
+    // V2: the hooks' text is forwarded as is, not read a second time.
+    const v2 = await send("sysctx-v2", v2Custom, { [SYSTEM_PREPARED_HEADER]: "1" });
+    assert.ok(v2.append?.endsWith(`\n\n${v2Custom}`));
+    assert.equal(v2.append?.match(/# OpenCode context/g)?.length, 1);
 
     process.env.OPENCODE_CLAUDE_FORWARD_SYSTEM_CONTEXT = "0";
     const off = await send("sysctx-off");

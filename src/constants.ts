@@ -9,6 +9,8 @@ export const DIRECTORY_HEADER = "x-opencode-claude-directory";
 export const PROXY_TOKEN_HEADER = "x-opencode-claude-token";
 /** Why V2 makes the request: primary, compaction, title or generate. */
 export const REQUEST_KIND_HEADER = "x-opencode-claude-request-kind";
+/** Set when the V2 plugin's request hooks already reduced the system prompt to what Claude gets. */
+export const SYSTEM_PREPARED_HEADER = "x-opencode-claude-system-prepared";
 
 export const EFFORT_LEVELS = [
   "low",

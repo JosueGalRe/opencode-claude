@@ -65,6 +65,7 @@ import {
   PROXY_TOKEN_HEADER,
   REQUEST_KIND_HEADER,
   SESSION_HEADER,
+  SYSTEM_PREPARED_HEADER,
   type ClaudeEffort,
 } from "./constants.js";
 import { forkClaudeSession, startClaudeQuery, withGracefulStop } from "./query.js";
@@ -1504,10 +1505,11 @@ async function handleChatCompletions(
     );
   }
   const toolNames = mcpServers ? openCodeToolNames(openCodeTools) : [];
+  const prepared = req.headers.get(SYSTEM_PREPARED_HEADER) === "1";
   const systemPrompt = summaryResume
     ? summaryResume.profile?.systemPrompt ??
-      turnSystemPrompt(null, messages, toolNames.length ? toolNames : null, cwd)
-    : turnSystemPrompt(metaKind, messages, bridged ? toolNames : null, cwd);
+      turnSystemPrompt(null, messages, toolNames.length ? toolNames : null, cwd, prepared)
+    : turnSystemPrompt(metaKind, messages, bridged ? toolNames : null, cwd, prepared);
   if (!isMetaRequest) {
     rememberChatTurn(conversationKey, { systemPrompt, tools: openCodeTools, effort: selection.effort });
   }

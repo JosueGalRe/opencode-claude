@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **V2 system prompt read by structure, OpenCode V2 ≥ 2.2.3 required**: the
+  stock prompt, `# Your Model`, date and `<env>` used to be cut from the
+  joined system prompt by their wording and order, which broke on every V2
+  layout change (2.0.19 moved the env block, 2.2.1 renamed the Code Mode
+  heading), and a wording change would have silently dropped AGENTS.md,
+  skills and the Code Mode catalog. The V2 plugin now does it in OpenCode's
+  `context`/`compaction`/`generate` hooks, before the parts are joined: the
+  role comes from the agent's own prompt, and instruction sources are
+  dropped by key (`core/date`, `core/environment`; `core/codemode` unless
+  `execute` is offered), as OpenCode's Claude Agent provider does. A custom
+  agent prompt that opens like the stock one is no longer dropped, one with
+  its own `# Your Model` heading no longer lets the real model section
+  through (400), and AGENTS.md lines quoting `Today's date:` or an `<env>`
+  block are kept. Keyed sources arrived in OpenCode 2.2.3; on older V2 the
+  plugin now fails the request with a message saying so. V1 is unchanged.
 - **Fable 5.2 in the fallback model list**: Claude Code's model list
   already offers `claude-fable-5-2` (1M); it is now also listed before the
   list is read or when the CLI is missing.

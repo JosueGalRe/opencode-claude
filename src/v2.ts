@@ -18,7 +18,9 @@ import {
   PROXY_TOKEN_HEADER,
   REQUEST_KIND_HEADER,
   SESSION_HEADER,
+  SYSTEM_PREPARED_HEADER,
 } from "./constants.js";
+import { hasInstructionSources, systemContextFromParts } from "./system-context.js";
 import { detectClaudeCode } from "./detect.js";
 import { deleteBridgesByConversation } from "./bridge-pool.js";
 import { resolveClaudeCli } from "./executable-path.js";
@@ -184,6 +186,32 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
       });
     });
 
+    // Read the system prompt by structure before OpenCode joins it into one
+    // string; the proxy forwards the result as is. Titles carry only the
+    // title agent's prompt and keep the proxy's handling.
+    const prepareSystem = async (event: {
+      agent: string;
+      system: Array<{ type: "text"; text: string; metadata?: Record<string, unknown> }>;
+      tools: Record<string, unknown>;
+    }) => {
+      // Before 2.2.3 the sources carry no keys, and guessing them by wording
+      // risks forwarding the <env> block that gets the request rejected.
+      if (!hasInstructionSources(event.system)) {
+        throw new Error("opencode-claude needs OpenCode 2.2.3 or later.");
+      }
+      const agent = await ctx.agent.get({ agentID: event.agent });
+      const text = systemContextFromParts(
+        event.system,
+        agent.data.system ?? "",
+        Object.keys(event.tools),
+        ctx.location.directory,
+      );
+      event.system = text ? [{ type: "text", text }] : [];
+    };
+    for (const name of ["context", "compaction", "generate"] as const) {
+      await ctx.session.hook(name, prepareSystem, { providerID: PROVIDER_ID });
+    }
+
     await ctx.session.hook("model.request", async (event) => {
       if (event.model.providerID !== PROVIDER_ID) return;
       await startProxy();
@@ -192,6 +220,7 @@ export const setupV2: Plugin.Plugin["setup"] = async (ctx) => {
         resolveClaudeModelSelection(event.model.id, event.model.variant),
       );
       event.headers[PROXY_TOKEN_HEADER] = getProxyAuthToken();
+      if (event.kind !== "title") event.headers[SYSTEM_PREPARED_HEADER] = "1";
       // A stateless generate.text call has no session; never send "undefined".
       if (event.sessionID) event.headers[SESSION_HEADER] = event.sessionID;
       event.headers[DIRECTORY_HEADER] = encodeURIComponent(ctx.location.directory);

@@ -12,39 +12,6 @@ type MessageLike = { role?: string; content?: unknown };
 const ENV_MARKER = "You are powered by the model named";
 const STOCK_BASE_PROMPT =
   /^You are (OpenCode|opencode|an AI agent running in OpenCode)\b/;
-// OpenCode V2 assembles: agent prompt, "# Your Model", one block of
-// instruction sources, then plugin additions. 2.0.15 rendered <env> and
-// "Today's date" before "# Code Mode" and user configuration; 2.0.19+ renders
-// Code Mode, MCP notes, references, skills and "Instructions from: …" first,
-// then the date and <env>, and sends later changes ("Today's date is now",
-// "The environment … is now") as extra system messages. So the stock
-// sections are stripped wherever they sit. V1 has no "# Your Model".
-const V2_MODEL_MARKER = /^# Your Model$/m;
-const V2_MODEL_BLOCK = /^# Your Model\n(?:- [^\n]*(?:\n|$))*/m;
-const V2_ENV_BLOCK =
-  /(?:^[^\n]*environment you are running in[^\n]*\n)?<env>[\s\S]*?<\/env>/gm;
-const V2_DATE_LINE = /^Today's date(?: is now)?:[^\n]*$/gm;
-
-/**
- * V2's Code Mode catalog: its heading through the tool listing under
- * "## Available tools" ("## Code Mode tools (call only inside `execute`)"
- * from 2.2.1). OpenCode renders the listing as one block (tool signatures
- * may span lines), so a blank line or a heading ends it; what follows (date,
- * environment, skills) need not have a heading.
- */
-function v2CodeMode(v2Body: string): string {
-  const heading = /^# Code Mode[\t ]*\r?$/m.exec(v2Body);
-  if (!heading) return "";
-  const rest = v2Body.slice(heading.index);
-  const tools = /^## (?:Available tools|Code Mode tools\b[^\r\n]*)[\t ]*\r?$/m.exec(rest);
-  if (!tools) return "";
-  const afterTools = tools.index + tools[0].length;
-  const listAt = afterTools + (/^(?:[\t ]*\r?\n)+/.exec(rest.slice(afterTools))?.[0].length ?? 0);
-  const list = rest.slice(listAt);
-  if (!list.startsWith("- ")) return "";
-  const end = /\r?\n[\t ]*\r?\n|\r?\n#{1,6} /.exec(list);
-  return rest.slice(0, listAt + (end ? end.index : list.length)).trim();
-}
 
 /**
  * Instruction files Claude Code loads itself with this proxy's setting
@@ -165,14 +132,10 @@ export function systemContextForwardingEnabled(): boolean {
  * the parts that are user configuration rather than OpenCode boilerplate: a
  * custom agent prompt (the agent's persona and rules), `instructions` files
  * and AGENTS.md, MCP server instructions and the available-skills list
- * (#6). Recover those so they can be appended to the preset. OpenCode's
- * stock base prompt and its <env> block are skipped; Claude Code supplies
- * its own equivalents.
- *
- * V2 matters doubly: its stock "# Your Model" + <env> section makes Anthropic
- * reject subscription credentials as third-party usage (400 "Third-party
- * apps…"). Its Code Mode catalog is forwarded separately only when the
- * `execute` tool is bridged.
+ * (#6). Recover those from V1's system prompt so they can be appended to the
+ * preset. OpenCode's stock base prompt and its <env> block are skipped;
+ * Claude Code supplies its own equivalents. V2 is read by structure instead
+ * (`systemContextFromParts`).
  *
  * With `cwd`, instruction files Claude Code loads itself for that directory
  * are left out.
@@ -181,24 +144,6 @@ export function openCodeSystemContext(messages: MessageLike[], cwd?: string): st
   const system = metaSystemPrompt(messages).trim();
   if (!system) return "";
   const own = (rest: string) => cwd ? withoutClaudeCodeInstructions(rest, cwd) : rest;
-
-  const v2ModelAt = system.search(V2_MODEL_MARKER);
-  if (v2ModelAt >= 0) {
-    let head = system.slice(0, v2ModelAt).trim();
-    if (STOCK_BASE_PROMPT.test(head)) head = "";
-    const body = system.slice(v2ModelAt);
-    // No </env> after "# Your Model": unrecognized V2 layout — forward
-    // nothing rather than risk the third-party credential rejection.
-    if (!body.includes("</env>")) return formatContext(head, "");
-    const rest = body
-      .replace(v2CodeMode(body), "")
-      .replace(V2_MODEL_BLOCK, "")
-      .replace(V2_ENV_BLOCK, "")
-      .replace(V2_DATE_LINE, "")
-      .replace(/\n{3,}/g, "\n\n")
-      .trim();
-    return formatContext(head, own(rest));
-  }
 
   const envAt = system.indexOf(ENV_MARKER);
   let head = envAt >= 0 ? system.slice(0, envAt).trim() : "";
@@ -210,6 +155,68 @@ export function openCodeSystemContext(messages: MessageLike[], cwd?: string): st
   rest = rest.trim();
 
   return formatContext(head, own(rest));
+}
+
+type SystemPartLike = { text: string; metadata?: Record<string, unknown> };
+
+/** Instruction sources Claude Code writes itself. */
+const CLAUDE_SUPPLIED_SOURCES = new Set(["core/date", "core/environment"]);
+/**
+ * The part V2's identity plugin inserts: "# Your Model" and its "- " lines,
+ * nothing else. Built-in hooks run before ours, so it is already there.
+ */
+const V2_MODEL_PART = /^# Your Model\n(?:- [^\n]*(?:\n|$))*$/;
+
+function instructionSources(part: SystemPartLike): Array<{ key: string; text: string }> | undefined {
+  const experimental = part.metadata?.experimental as { instructions?: unknown } | undefined;
+  const sources = experimental?.instructions;
+  return Array.isArray(sources) &&
+    sources.every((s) => typeof s?.key === "string" && typeof s?.text === "string")
+    ? sources
+    : undefined;
+}
+
+/** OpenCode ≥ 2.2.3 keys each instruction source; older V2 sends plain text. */
+export function hasInstructionSources(parts: SystemPartLike[]): boolean {
+  return parts.some((part) => instructionSources(part) !== undefined);
+}
+
+/**
+ * V2 system parts read by structure instead of wording: part 0 is the
+ * agent's prompt, which the preset replaces (`role`, a custom agent's own
+ * prompt, is forwarded instead), the instructions part lists its sources by
+ * key, and plugins add parts of their own. Returns what is appended to the
+ * preset, the Code Mode catalog first when `execute` is offered.
+ */
+export function systemContextFromParts(
+  parts: SystemPartLike[],
+  role: string,
+  toolNames: string[],
+  cwd: string,
+): string {
+  let codeMode = "";
+  const texts: string[] = [];
+  for (const part of parts.slice(1)) {
+    const sources = instructionSources(part);
+    if (!sources) {
+      if (!V2_MODEL_PART.test(part.text.trim())) texts.push(part.text);
+      continue;
+    }
+    for (const source of sources) {
+      if (CLAUDE_SUPPLIED_SOURCES.has(source.key)) continue;
+      if (source.key === "core/codemode") codeMode = source.text.trim();
+      else texts.push(source.text);
+    }
+  }
+  const context = withoutClaudeCodeInstructions(texts.join("\n\n").trim(), cwd);
+  return [
+    codeMode && toolNames.includes("execute")
+      ? `${codeMode}\n\nThe \`execute\` tool above is mcp__opencode__execute.`
+      : "",
+    formatContext(role.trim(), context),
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 /** Rules for a turn whose tools are bridged OpenCode tools. */
@@ -264,21 +271,23 @@ const UTILITY_SYSTEM_PROMPT =
  * bridged-tool rules and the forwarded OpenCode context appended as they
  * apply. `bridgedToolNames` is null when the turn runs without bridged tools;
  * `cwd` is where Claude Code runs, whose instruction files it loads itself.
+ * `prepared`: V2's hooks already reduced the system prompt to what Claude
+ * gets (`systemContextFromParts`).
  */
 export function turnSystemPrompt(
   metaKind: MetaRequestKind,
   messages: MessageLike[],
   bridgedToolNames: string[] | null,
   cwd?: string,
+  prepared = false,
 ): ClaudeCodePreset | string {
   if (metaKind) {
     // V2 sends its summary instructions in the user turn; its system prompt is
-    // the agent's own, whose "# Your Model"/<env> sections get the request
-    // rejected as third-party usage.
-    const system = metaSystemPrompt(messages);
+    // the agent's own context. V1 summary agents carry theirs in the system
+    // prompt.
     return [
       UTILITY_SYSTEM_PROMPT,
-      metaInstructions(metaKind, V2_MODEL_MARKER.test(system) ? "" : system),
+      metaInstructions(metaKind, prepared ? "" : metaSystemPrompt(messages)),
     ].join("\n\n");
   }
   // Part of the chat turn's remembered prompt, so a summary that resumes the
@@ -289,19 +298,13 @@ export function turnSystemPrompt(
     ...(excludeDynamicSections() ? { excludeDynamicSections: true } : {}),
   };
   const forwardContext = systemContextForwardingEnabled();
-  const context = forwardContext
-    ? openCodeSystemContext(messages, cwd)
-    : "";
-  const system = metaSystemPrompt(messages);
-  const modelAt = system.search(V2_MODEL_MARKER);
-  const codeMode =
-    forwardContext && bridgedToolNames?.includes("execute") &&
-    modelAt >= 0 && system.includes("</env>", modelAt)
-      ? v2CodeMode(system.slice(modelAt))
-      : "";
+  const context = !forwardContext
+    ? ""
+    : prepared
+      ? metaSystemPrompt(messages).trim()
+      : openCodeSystemContext(messages, cwd);
   const append = [
     bridgedToolNames ? bridgedToolRules(bridgedToolNames) : "",
-    codeMode ? `${codeMode}\n\nThe \`execute\` tool above is mcp__opencode__execute.` : "",
     context,
   ]
     .filter(Boolean)

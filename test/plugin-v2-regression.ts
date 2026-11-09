@@ -22,6 +22,7 @@ async function main() {
     PROXY_TOKEN_HEADER,
     REQUEST_KIND_HEADER,
     SESSION_HEADER,
+    SYSTEM_PREPARED_HEADER,
   } = await import("../src/constants.ts");
   const { decodeClaudeModelSelection } = await import(
     "../src/model-selection.ts"
@@ -104,9 +105,15 @@ async function main() {
       },
     },
     session: {
-      async hook(name: string, callback: (event: any) => void) {
+      async hook(name: string, callback: (event: any) => void, options?: { providerID?: string }) {
+        if (name !== "model.request") assert.equal(options?.providerID, PROVIDER_ID, `${name} hook scoped to the provider`);
         hooks.set(name, callback);
         return { async dispose() {} };
+      },
+    },
+    agent: {
+      async get({ agentID }: { agentID: string }) {
+        return { data: { system: agentID === "reviewer" ? "You are a strict reviewer." : undefined } };
       },
     },
   };
@@ -202,6 +209,37 @@ async function main() {
     assert.equal(decodeURIComponent(event.headers[DIRECTORY_HEADER]!), "/work/project");
     assert.equal(event.headers[PROXY_TOKEN_HEADER], token);
     assert.equal(event.headers[REQUEST_KIND_HEADER], "compaction");
+    assert.equal(event.headers[SYSTEM_PREPARED_HEADER], "1");
+    const title = { ...event, kind: "title", headers: {} as Record<string, string> };
+    await onModelRequest!(title);
+    assert.equal(SYSTEM_PREPARED_HEADER in title.headers, false, "titles keep the proxy's handling");
+
+    // The system prompt is reduced by structure before OpenCode joins it.
+    for (const name of ["context", "compaction", "generate"]) assert.ok(hooks.get(name), `${name} hook registered`);
+    const sources = [
+      { key: "core/instructions", text: "Instructions from: /repo/AGENTS.md\nRun tests sequentially." },
+      { key: "core/date", text: "Today's date: Thu Oct 01 2026" },
+      { key: "core/environment", text: "<env>\n  Working directory: /repo\n</env>" },
+    ];
+    const context = {
+      agent: "reviewer",
+      tools: { read: {} },
+      system: [
+        { type: "text", text: "You are an AI agent running in OpenCode." },
+        { type: "text", text: "# Your Model\n- Name: Sonnet\n- Provider ID: claude-code\n- Model ID: sonnet" },
+        { type: "text", text: sources.map((s) => s.text).join("\n\n"), metadata: { experimental: { instructions: sources } } },
+      ],
+    };
+    await hooks.get("context")!(context);
+    assert.equal(context.system.length, 1);
+    assert.match(context.system[0]!.text, /# Agent role[\s\S]*strict reviewer[\s\S]*Run tests sequentially/);
+    assert.doesNotMatch(context.system[0]!.text, /Your Model|Working directory|Today's date/);
+    // Before 2.2.3 nothing is keyed: refuse rather than guess.
+    await assert.rejects(
+      hooks.get("context")!({ agent: "build", tools: {}, system: [{ type: "text", text: "You are OpenCode.\n<env>\n</env>" }] }),
+      /OpenCode 2\.2\.3 or later/,
+    );
+
     // A stateless generate call has no session: no header, not "undefined".
     const generate = { ...event, sessionID: undefined, kind: "generate", headers: {} as Record<string, string> };
     await onModelRequest!(generate as unknown as typeof event);
