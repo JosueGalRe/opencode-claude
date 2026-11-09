@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Titles work with a login set in Claude Code's settings**: titles, other
+  one-shot utility turns and the model list run Claude Code without its
+  settings files, so a login configured only in the `env` of
+  `~/.claude/settings.json` (a gateway's `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_AUTH_TOKEN`) never reached them, and titles failed with "Not
+  logged in" while chats worked. Those turns now get that file's `env` block
+  (`$CLAUDE_CONFIG_DIR` is honored), as chats do, so Bedrock, Vertex, proxy
+  and CA settings there reach them too; nothing else from the file.
+  Credentials in OpenCode's own environment are still ignored. A login
+  through `apiKeyHelper` or project settings still doesn't reach titles.
 - **No silent non-streaming retry**: when a stream broke partway, Claude
   Code re-sent the request without streaming, and the plugin, which reads
   Claude's text only from the stream, never passed that answer on. Claude

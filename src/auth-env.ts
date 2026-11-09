@@ -2,6 +2,10 @@
  * Subscription-only child env for Claude Code (from OpenChamber harness).
  * Never log env values — this module only returns sanitized copies.
  */
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { log } from "./log.js";
 
 /** Credential overrides removed so Claude Code uses its own login store. */
 export const AUTH_OVERRIDE_ENV_KEYS = Object.freeze([
@@ -67,4 +71,40 @@ export function buildClaudeCodeChildEnv(
   // text only from stream deltas. Failing instead takes the error path.
   env.CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK = "1";
   return env;
+}
+
+/**
+ * The string values of the `env` block in the user's Claude Code settings
+ * (`$CLAUDE_CONFIG_DIR/settings.json`, default `~/.claude/settings.json`).
+ * Chat turns load user settings, so the CLI applies this block itself over
+ * its env. A turn that loads none (titles, other one-shot utility turns, the
+ * model list) would lose a login set there (a gateway's endpoint and token,
+ * Bedrock or Vertex, a proxy or CA) and fail with "Not logged in" while chats
+ * work. Credentials inherited from the OpenCode process stay removed. A
+ * missing file gives `{}`; an unreadable or malformed one is logged (never
+ * its values) and gives `{}`.
+ */
+export async function readClaudeSettingsEnv(
+  baseEnv: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env,
+): Promise<Record<string, string>> {
+  const configDir = baseEnv.CLAUDE_CONFIG_DIR?.trim() || join(baseEnv.HOME?.trim() || homedir(), ".claude");
+  const file = join(configDir, "settings.json");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readFile(file, "utf8"));
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code !== "ENOENT") {
+      log.warn("[opencode-claude] could not read Claude Code settings for utility turns", {
+        file,
+        error: code ?? (error instanceof Error ? error.name : "unknown"),
+      });
+    }
+    return {};
+  }
+  const settingsEnv = (parsed as { env?: unknown } | null)?.env;
+  if (!settingsEnv || typeof settingsEnv !== "object" || Array.isArray(settingsEnv)) return {};
+  return Object.fromEntries(
+    Object.entries(settingsEnv).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+  );
 }

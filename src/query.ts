@@ -2,7 +2,7 @@
  * Thin wrapper around @anthropic-ai/claude-agent-sdk query()/close().
  * Import failure is surfaced as unavailable — detect must not report ready.
  */
-import { buildClaudeCodeChildEnv } from "./auth-env.js";
+import { buildClaudeCodeChildEnv, readClaudeSettingsEnv } from "./auth-env.js";
 import { isClaudeEffort, type ClaudeEffort } from "./constants.js";
 import {
   assertClaudeWorkingDirectory,
@@ -272,6 +272,14 @@ export async function startClaudeQuery(
   }
 
   const env = buildClaudeCodeChildEnv(params.env || process.env);
+  const settingSources = Array.isArray(params.settingSources)
+    ? params.settingSources
+    : ["user", "project", "local"];
+  // Without user settings the CLI skips their `env`, and a login set there
+  // would be lost. shortcut: a top-level `apiKeyHelper` and a login in project
+  // or local settings still don't reach these turns; pass them through
+  // options.settings when someone signs in that way.
+  if (!settingSources.includes("user")) Object.assign(env, await readClaudeSettingsEnv(env));
   const cwd = assertClaudeWorkingDirectory(params.cwd);
   const pathToClaudeCodeExecutable =
     trimmedString(params.pathToClaudeCodeExecutable) ||
@@ -282,9 +290,7 @@ export async function startClaudeQuery(
     cwd,
     env,
     includePartialMessages: params.includePartialMessages !== false,
-    settingSources: Array.isArray(params.settingSources)
-      ? params.settingSources
-      : ["user", "project", "local"],
+    settingSources,
   };
 
   if (pathToClaudeCodeExecutable) {
@@ -459,6 +465,8 @@ export async function listClaudeSupportedModels(
     await new Promise<void>((resolve) => { release = resolve; });
   })();
   const env = buildClaudeCodeChildEnv(process.env);
+  // No setting sources here either: keep a login configured in them.
+  Object.assign(env, await readClaudeSettingsEnv(env));
   const pathToClaudeCodeExecutable = await resolveClaudeCodeExecutable({ env });
   const query = sdk.query({
     prompt: idle,
