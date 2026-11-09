@@ -97,7 +97,7 @@ Ids are concrete Claude Code model ids; names are derived from the id. Most curr
 
 | Id shape | Example | Context |
 | --- | --- | --- |
-| Plain id that already runs at 1M | `claude-opus-5-5` · `claude-fable-5-1` · `claude-opus-4-8` · `claude-sonnet-5-5` · `claude-haiku-5-5` | 1M |
+| Plain id that already runs at 1M | `claude-opus-5-5` · `claude-fable-5-2` · `claude-fable-5-1` · `claude-opus-4-8` · `claude-sonnet-5-5` · `claude-haiku-5-5` | 1M |
 | Plain and `[1m]`, as separate choices | `claude-opus-4-6` · `claude-opus-4-6[1m]` | 200k · 1M |
 | Everything else | `claude-haiku-4-5-20251001` | 200k |
 

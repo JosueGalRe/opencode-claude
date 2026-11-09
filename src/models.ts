@@ -51,6 +51,7 @@ function model(
 /** Used before discovery or when the CLI is unavailable. No moving aliases. */
 const FALLBACK_MODELS: ClaudeModel[] = [
   model("claude-opus-5-5", "Opus 5.5", LIMIT_1M),
+  model("claude-fable-5-2", "Fable 5.2", LIMIT_1M),
   model("claude-fable-5-1", "Fable 5.1", LIMIT_1M),
   model("claude-sonnet-5-5", "Sonnet 5.5", LIMIT_1M),
   model("claude-sonnet-5", "Sonnet 5", LIMIT_1M),
@@ -71,7 +72,8 @@ export type SdkModelRow = {
 // The CLI's registry (2.1.310) marks Opus 5/5.5, Fable 5/5.1, Opus 4.7/4.8,
 // Sonnet 5/5.5 and Haiku 5.5 native_1m (window 1e6): their plain ids run at
 // 1M, so the CLI lists them without [1m]. Opus 4.6 is 200K plain, 1M with
-// the suffix.
+// the suffix. Fable 5.2 isn't in that registry; the remote model catalog
+// gives it max_input_tokens 1e6.
 const ONE_M_FAMILIES: Array<{ match: RegExp; mode: "default" | "optional" | "fixed" }> = [
   { match: /^claude-fable-5/, mode: "fixed" },
   { match: /^claude-opus-5/, mode: "fixed" },

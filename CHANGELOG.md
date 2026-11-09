@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Fable 5.2 in the fallback model list**: Claude Code's model list
+  already offers `claude-fable-5-2` (1M); it is now also listed before the
+  list is read or when the CLI is missing.
 - **Titles work with a login set in Claude Code's settings**: titles, other
   one-shot utility turns and the model list run Claude Code without its
   settings files, so a login configured only in the `env` of
