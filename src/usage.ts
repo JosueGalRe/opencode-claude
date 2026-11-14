@@ -367,6 +367,10 @@ export class TurnUsage {
   }
 
   resolve(): OpenAIUsage | null {
+    // The result sums every call of the CLI turn. Once earlier responses of
+    // this bridge counted calls, that sum is no context size: report none and
+    // OpenCode measures from the last response that had a call.
+    if (!this.#calls.length && this.#seen.size) return null;
     return resolveOpenCodeUsage(this.#state, this.#result);
   }
 }

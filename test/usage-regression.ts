@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import {
   addUniqueAssistantUsageState,
   resolveOpenCodeUsage,
+  TurnUsage,
   usageFromSdkResult,
   usageFromSdkTurnResult,
 } from "../src/usage.ts";
@@ -115,6 +116,23 @@ const resultEvent = {
 };
 assert.equal(usageFromSdkResult(resultEvent)?.total_tokens, 1_850_000);
 assert.equal(usageFromSdkTurnResult(resultEvent)?.total_tokens, 950_000);
+
+// A response with no API call of its own (an interrupted turn's last one)
+// gets only the result, whose usage sums every call of the CLI turn. With
+// earlier calls counted on the bridge it is no context size: report none,
+// or OpenCode compacts at the sum (1M+ on a 340k context).
+{
+  const bridgeSeen = new Set<string>();
+  const earlier = new TurnUsage(bridgeSeen);
+  earlier.assistant(firstContext, "sdk-turn-1");
+  assert.equal(earlier.resolve()?.total_tokens, firstContext.total_tokens);
+  const interrupted = new TurnUsage(bridgeSeen);
+  interrupted.result(usageFromSdkTurnResult(resultEvent)!);
+  assert.equal(interrupted.resolve(), null);
+  const fresh = new TurnUsage(new Set<string>());
+  fresh.result(usageFromSdkTurnResult(resultEvent)!);
+  assert.equal(fresh.resolve()?.total_tokens, 950_000);
+}
 
 const {
   getClaudeProxyBaseUrl,

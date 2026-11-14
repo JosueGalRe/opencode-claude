@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Interrupted turns no longer force an early compaction**: when a turn
+  that had already made several API calls was interrupted, its last
+  response carried no call of its own, and the plugin reported the usage of
+  Claude Code's final result, which sums every call of the turn. OpenCode
+  read that sum as the context size (1–12M on a 340k context) and compacted
+  on the next message, well before `compactAt`. Such a response now reports
+  no usage, and OpenCode measures from the last response that had a call.
 - **V2 system prompt read by structure, OpenCode V2 ≥ 2.2.3 required**: the
   stock prompt, `# Your Model`, date and `<env>` used to be cut from the
   joined system prompt by their wording and order, which broke on every V2
